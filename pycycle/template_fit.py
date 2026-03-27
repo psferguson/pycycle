@@ -60,97 +60,92 @@ def _interp_template(gamma, bidx, phases):
     return (1.0 - frac) * gamma[bidx, lo] + frac * gamma[bidx, hi]
 
 
-def _rss_grid_rr_py(t, mag, w, bidx, gamma, dgamma, dust, betas, omegas, n_newton):
-    N_freq = len(omegas)
-    n_ph = gamma.shape[1]
-    rss_out = np.empty(N_freq)
-    phi_out = np.empty(N_freq)
+def _rss_grid_rr_py(t, mag, w, bidx, gamma, dgamma, dust, betas, freqs, n_newton, n_start):
+    N_freq = len(freqs)
+    rss_out = np.full(N_freq, np.inf)
+    phi_out = np.zeros(N_freq)
     coeffs_out = np.zeros((N_freq, 3))
 
-    for k, omega in enumerate(omegas):
-        phi = 0.0
-        mu = ebv = A = 0.0
+    for k, freq in enumerate(freqs):
+        for s in range(n_start):
+            phi = s / n_start
+            mu = ebv = A = 0.0
 
-        for _ in range(n_newton):
-            beta_corr = betas[bidx, 0] + betas[bidx, 1] * omega + betas[bidx, 2] * omega * omega
+            for _ in range(n_newton):
+                beta_corr = betas[bidx, 0] + betas[bidx, 1] * freq + betas[bidx, 2] * freq * freq
+                y = mag - beta_corr
+                ph = (freq * t + phi) % 1.0
+                g = _interp_template(gamma, bidx, ph)
+                d = dust[bidx]
+                X = np.column_stack([np.ones(len(t)), d, g])
+                XtW = (X * w[:, None]).T
+                try:
+                    params = np.linalg.solve(XtW @ X, XtW @ y)
+                except np.linalg.LinAlgError:
+                    break
+                mu, ebv, A = params
+                dg = _interp_template(dgamma, bidx, ph)
+                res = y - mu - ebv * d - A * g
+                numer = np.sum(w * res * A * dg)
+                denom = np.sum(w * (A * dg) ** 2)
+                if abs(denom) > 1e-20:
+                    phi = (phi - numer / denom) % 1.0
+
+            beta_corr = betas[bidx, 0] + betas[bidx, 1] * freq + betas[bidx, 2] * freq * freq
             y = mag - beta_corr
-            ph = (omega * t + phi) % 1.0
+            ph = (freq * t + phi) % 1.0
             g = _interp_template(gamma, bidx, ph)
-
-            d = dust[bidx]
-            X = np.column_stack([np.ones(len(t)), d, g])
-            XtW = (X * w[:, None]).T
-            try:
-                params = np.linalg.solve(XtW @ X, XtW @ y)
-            except np.linalg.LinAlgError:
-                break
-            mu, ebv, A = params
-
-            # Newton step for phi
-            dg = _interp_template(dgamma, bidx, ph)
-            res = y - mu - ebv * d - A * g
-            numer = np.sum(w * res * A * dg)
-            denom = np.sum(w * (A * dg) ** 2)
-            if abs(denom) > 1e-20:
-                phi = (phi - numer / denom) % 1.0
-
-        beta_corr = betas[bidx, 0] + betas[bidx, 1] * omega + betas[bidx, 2] * omega * omega
-        y = mag - beta_corr
-        ph = (omega * t + phi) % 1.0
-        g = _interp_template(gamma, bidx, ph)
-        res = y - mu - ebv * dust[bidx] - A * g
-        rss_out[k] = np.sum(w * res ** 2)
-        phi_out[k] = phi
-        coeffs_out[k] = [mu, ebv, A]
+            res = y - mu - ebv * dust[bidx] - A * g
+            rss = np.sum(w * res ** 2)
+            if rss < rss_out[k]:
+                rss_out[k] = rss
+                phi_out[k] = phi
+                coeffs_out[k] = [mu, ebv, A]
 
     return rss_out, phi_out, coeffs_out
 
 
-def _rss_grid_mb_py(t, mag, w, bidx, gamma, dgamma, omegas, n_bands, n_newton):
-    N_freq = len(omegas)
-    n_ph = gamma.shape[1]
-    rss_out = np.empty(N_freq)
-    phi_out = np.empty(N_freq)
+def _rss_grid_mb_py(t, mag, w, bidx, gamma, dgamma, freqs, n_bands, n_newton, n_start):
+    N_freq = len(freqs)
+    rss_out = np.full(N_freq, np.inf)
+    phi_out = np.zeros(N_freq)
     mu_out = np.zeros((N_freq, n_bands))
     A_out = np.zeros(N_freq)
 
-    for k, omega in enumerate(omegas):
-        phi = 0.0
-        A = 1.0
-        mu_b = np.zeros(n_bands)
+    for k, freq in enumerate(freqs):
+        for s in range(n_start):
+            phi = s / n_start
+            A = 1.0
+            mu_b = np.zeros(n_bands)
 
-        for _ in range(n_newton):
-            ph = (omega * t + phi) % 1.0
+            for _ in range(n_newton):
+                ph = (freq * t + phi) % 1.0
+                g = _interp_template(gamma, bidx, ph)
+                for b in range(n_bands):
+                    mask = bidx == b
+                    if mask.any():
+                        mu_b[b] = np.sum(w[mask] * (mag[mask] - A * g[mask])) / np.sum(w[mask])
+                resid = mag - mu_b[bidx]
+                A_num = np.sum(w * resid * g)
+                A_den = np.sum(w * g * g)
+                if A_den > 1e-20:
+                    A = A_num / A_den
+                dg = _interp_template(dgamma, bidx, ph)
+                res = mag - mu_b[bidx] - A * g
+                numer = np.sum(w * res * A * dg)
+                denom = np.sum(w * (A * dg) ** 2)
+                if abs(denom) > 1e-20:
+                    phi = (phi - numer / denom) % 1.0
+
+            ph = (freq * t + phi) % 1.0
             g = _interp_template(gamma, bidx, ph)
-
-            # update mu_b
-            for b in range(n_bands):
-                mask = bidx == b
-                if mask.any():
-                    mu_b[b] = np.sum(w[mask] * (mag[mask] - A * g[mask])) / np.sum(w[mask])
-
-            # update A
-            resid = mag - mu_b[bidx]
-            A_num = np.sum(w * resid * g)
-            A_den = np.sum(w * g * g)
-            if A_den > 1e-20:
-                A = A_num / A_den
-
-            # Newton step for phi
-            dg = _interp_template(dgamma, bidx, ph)
             res = mag - mu_b[bidx] - A * g
-            numer = np.sum(w * res * A * dg)
-            denom = np.sum(w * (A * dg) ** 2)
-            if abs(denom) > 1e-20:
-                phi = (phi - numer / denom) % 1.0
-
-        ph = (omega * t + phi) % 1.0
-        g = _interp_template(gamma, bidx, ph)
-        res = mag - mu_b[bidx] - A * g
-        rss_out[k] = np.sum(w * res ** 2)
-        phi_out[k] = phi
-        mu_out[k] = mu_b
-        A_out[k] = A
+            rss = np.sum(w * res ** 2)
+            if rss < rss_out[k]:
+                rss_out[k] = rss
+                phi_out[k] = phi
+                mu_out[k] = mu_b
+                A_out[k] = A
 
     return rss_out, phi_out, mu_out, A_out
 
@@ -208,8 +203,8 @@ class TemplateFitResult:
             self.best_coeffs['A'] = float(A_arr[best_k])
 
     @property
-    def best_omega(self):
-        return 2.0 * np.pi / self.best_period
+    def best_freq(self):
+        return 1.0 / self.best_period
 
     def predict(self, hjd, filts, filtnams):
         """Predict magnitudes at given times and bands.
@@ -226,12 +221,12 @@ class TemplateFitResult:
         """
         hjd = np.asarray(hjd)
         filts = np.asarray(filts, dtype=int)
-        omega = self.best_omega
+        freq = self.best_freq
         phi = self.best_phi
-        t = template = self.template
+        template = self.template
 
         bidx = np.array([template.band_index(filtnams[int(f)]) for f in filts])
-        ph = (omega * hjd + phi) % 1.0
+        ph = (freq * hjd + phi) % 1.0
         g = _interp_template(template.gamma, bidx, ph)
 
         if template.dust is not None:
@@ -239,8 +234,8 @@ class TemplateFitResult:
             ebv = self.best_coeffs['EBV']
             A = self.best_coeffs['A']
             beta = (template.betas[bidx, 0]
-                    + template.betas[bidx, 1] * omega
-                    + template.betas[bidx, 2] * omega ** 2)
+                    + template.betas[bidx, 1] * freq
+                    + template.betas[bidx, 2] * freq ** 2)
             return beta + mu + ebv * template.dust[bidx] + A * g
         else:
             mu_arr = np.array([self.best_coeffs[f'mu_{b}'] for b in template.bands])
@@ -274,7 +269,7 @@ class TemplateFitResult:
         if period is None:
             period = self.best_period
         phi = self.best_phi
-        omega = 2.0 * np.pi / period
+        freq = 1.0 / period
         template = self.template
 
         if ax is None:
@@ -292,7 +287,7 @@ class TemplateFitResult:
             mask = self._filts == float(i)
             if not mask.any():
                 continue
-            ph_obs = (omega * self._hjd[mask] + phi) % 1.0
+            ph_obs = (freq * self._hjd[mask] + phi) % 1.0
             c = colors[i % len(colors)]
 
             # data
@@ -314,8 +309,8 @@ class TemplateFitResult:
                 ebv = self.best_coeffs['EBV']
                 A = self.best_coeffs['A']
                 beta = (template.betas[bi, 0]
-                        + template.betas[bi, 1] * omega
-                        + template.betas[bi, 2] * omega ** 2)
+                        + template.betas[bi, 1] * freq
+                        + template.betas[bi, 2] * freq ** 2)
                 m_pred = beta + mu + ebv * template.dust[bi] + A * g_dense
             else:
                 mu_b = self.best_coeffs.get(f'mu_{fname}', 0.0)
@@ -354,10 +349,11 @@ class TemplateFitter:
         If True (default), weight observations by 1/sigma^2.
     """
 
-    def __init__(self, template: RRTemplate, n_newton: int = 5,
+    def __init__(self, template: RRTemplate, n_newton: int = 5, n_start: int = 4,
                  use_errors: bool = True):
         self.template = template
         self.n_newton = n_newton
+        self.n_start = n_start
         self.use_errors = use_errors
         self._backend = 'C/Cython' if _USE_C else 'pure Python'
 
@@ -412,15 +408,16 @@ class TemplateFitter:
             ptest = np.ascontiguousarray(periods, dtype=np.float64)
         else:
             ptest = _make_period_grid(hjd, pmin, dphi, pmax)
-        omegas = np.ascontiguousarray(2.0 * np.pi / ptest, dtype=np.float64)
-
         print(f'TemplateFitter: backend = {self._backend}')
         print(f'TemplateFitter: template = {template.name}')
         print(f'TemplateFitter: {len(ptest)} test periods, '
-              f'{self.n_newton} Newton iterations')
+              f'{self.n_newton} Newton iters × {self.n_start} starts')
 
         gamma = np.ascontiguousarray(template.gamma, dtype=np.float64)
         dg = np.ascontiguousarray(template.dgamma(), dtype=np.float64)
+
+        # NOTE: freqs are in cycles/day (= 1/P), matching the template phase grid [0,1)
+        freqs = np.ascontiguousarray(1.0 / ptest, dtype=np.float64)
 
         if template.dust is not None:
             # rr-templates mode
@@ -428,24 +425,24 @@ class TemplateFitter:
             betas = np.ascontiguousarray(template.betas, dtype=np.float64)
             if _USE_C:
                 rss, phi, coeffs = rss_grid_rr(
-                    hjd, mag, w, bidx, gamma, dg, dust, betas, omegas,
-                    self.n_newton)
+                    hjd, mag, w, bidx, gamma, dg, dust, betas, freqs,
+                    self.n_newton, self.n_start)
             else:
                 rss, phi, coeffs = _rss_grid_rr_py(
-                    hjd, mag, w, bidx, gamma, dg, dust, betas, omegas,
-                    self.n_newton)
+                    hjd, mag, w, bidx, gamma, dg, dust, betas, freqs,
+                    self.n_newton, self.n_start)
             coeffs_raw = coeffs
         else:
             # Multiband mode
             n_bands = template.n_bands
             if _USE_C:
                 rss, phi, mu_out, A_out = rss_grid_mb(
-                    hjd, mag, w, bidx, gamma, dg, omegas, n_bands,
-                    self.n_newton)
+                    hjd, mag, w, bidx, gamma, dg, freqs, n_bands,
+                    self.n_newton, self.n_start)
             else:
                 rss, phi, mu_out, A_out = _rss_grid_mb_py(
-                    hjd, mag, w, bidx, gamma, dg, omegas, n_bands,
-                    self.n_newton)
+                    hjd, mag, w, bidx, gamma, dg, freqs, n_bands,
+                    self.n_newton, self.n_start)
             coeffs_raw = (mu_out, A_out)
 
         return TemplateFitResult(

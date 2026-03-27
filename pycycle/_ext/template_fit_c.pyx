@@ -70,136 +70,142 @@ def rss_grid_rr(
     double[:, :] dgamma,
     double[:] dust,
     double[:, :] betas,
-    double[:] omegas,
+    double[:] freqs,
     int n_newton = 5,
+    int n_start  = 4,
 ):
     """RSS grid search — rr-templates model.
 
     Model per observation (band b, time t_i):
-        mag_i = beta_b(omega) + mu + EBV * dust_b + A * gamma_b(omega*t_i + phi)
+        mag_i = beta_b(freq) + mu + EBV * dust_b + A * gamma_b(freq*t_i + phi)
     where
-        beta_b(omega) = c0_b + p1_b * omega + p2_b * omega^2
+        beta_b(freq) = c0_b + p1_b * freq + p2_b * freq^2
+    and freq = 1/P is in cycles/day.
 
     Parameters
     ----------
-    t : (N,) observation times
+    t : (N,) observation times [days]
     mag : (N,) observed magnitudes
     w : (N,) weights = 1/sigma^2
     bidx : (N,) band indices into gamma rows
-    gamma : (n_bands, n_phase) template
+    gamma : (n_bands, n_phase) template values
     dgamma : (n_bands, n_phase) template derivative d(gamma)/d(phase)
     dust : (n_bands,) per-band extinction coefficients
     betas : (n_bands, 3) columns are c0, p1, p2
-    omegas : (N_freq,) angular frequencies = 2*pi/P
-    n_newton : Newton iterations per frequency
+    freqs : (N_freq,) frequencies in cycles/day = 1/P
+    n_newton : Newton iterations per (frequency, start)
+    n_start : number of equally-spaced initial phases to try per frequency
 
     Returns
     -------
-    rss : (N_freq,) residual sum of squares
+    rss : (N_freq,) residual sum of squares (best over all starts)
     phi : (N_freq,) best phase per frequency
     coeffs : (N_freq, 3) [mu, EBV, A] at best phase
     """
     cdef int N      = t.shape[0]
-    cdef int N_freq = omegas.shape[0]
+    cdef int N_freq = freqs.shape[0]
     cdef int n_ph   = gamma.shape[1]
 
-    rss_out    = np.empty(N_freq, dtype=np.float64)
-    phi_out    = np.empty(N_freq, dtype=np.float64)
+    rss_out    = np.full(N_freq, 1e300, dtype=np.float64)
+    phi_out    = np.zeros(N_freq, dtype=np.float64)
     coeffs_out = np.zeros((N_freq, 3), dtype=np.float64)
 
     cdef double[:] rss_v   = rss_out
     cdef double[:] phi_v   = phi_out
     cdef double[:, :] co_v = coeffs_out
 
-    cdef int    i, k, it, err
+    cdef int    i, k, it, s, err
     cdef long   b
-    cdef double omega, phi, mu, ebv, A
+    cdef double freq, phi, phi0, mu, ebv, A
     cdef double yi, wi, di, gi, dgi, phase_i
     cdef double X00, X01, X02, X11, X12, X22, Xy0, Xy1, Xy2
     cdef double numer, denom, rss_val, res_i
 
     for k in range(N_freq):
-        omega = omegas[k]
-        phi   = 0.0
-        mu    = 0.0
-        ebv   = 0.0
-        A     = 0.0
+        freq = freqs[k]
 
-        for it in range(n_newton):
-            X00 = 0.0; X01 = 0.0; X02 = 0.0
-            X11 = 0.0; X12 = 0.0; X22 = 0.0
-            Xy0 = 0.0; Xy1 = 0.0; Xy2 = 0.0
+        for s in range(n_start):
+            phi0 = s / <double>n_start
+            phi  = phi0
+            mu   = 0.0
+            ebv  = 0.0
+            A    = 0.0
 
+            for it in range(n_newton):
+                X00 = 0.0; X01 = 0.0; X02 = 0.0
+                X11 = 0.0; X12 = 0.0; X22 = 0.0
+                Xy0 = 0.0; Xy1 = 0.0; Xy2 = 0.0
+
+                for i in range(N):
+                    b  = bidx[i]
+                    yi = mag[i] - (betas[b, 0]
+                                 + betas[b, 1] * freq
+                                 + betas[b, 2] * freq * freq)
+                    wi = w[i]
+                    di = dust[b]
+                    phase_i = fmod(freq * t[i] + phi, 1.0)
+                    if phase_i < 0.0:
+                        phase_i += 1.0
+                    gi = _interp(gamma, b, phase_i, n_ph)
+
+                    X00 += wi
+                    X01 += wi * di
+                    X02 += wi * gi
+                    X11 += wi * di * di
+                    X12 += wi * di * gi
+                    X22 += wi * gi * gi
+                    Xy0 += wi * yi
+                    Xy1 += wi * di * yi
+                    Xy2 += wi * gi * yi
+
+                err = _solve3(X00, X01, X02, X11, X12, X22,
+                              Xy0, Xy1, Xy2, &mu, &ebv, &A)
+                if err:
+                    break
+
+                numer = 0.0
+                denom = 0.0
+                for i in range(N):
+                    b  = bidx[i]
+                    yi = mag[i] - (betas[b, 0]
+                                 + betas[b, 1] * freq
+                                 + betas[b, 2] * freq * freq)
+                    wi = w[i]
+                    phase_i = fmod(freq * t[i] + phi, 1.0)
+                    if phase_i < 0.0:
+                        phase_i += 1.0
+                    gi  = _interp(gamma,  b, phase_i, n_ph)
+                    dgi = _interp(dgamma, b, phase_i, n_ph)
+                    res_i  = yi - mu - ebv * dust[b] - A * gi
+                    numer += wi * res_i * (A * dgi)
+                    denom += wi * (A * dgi) * (A * dgi)
+
+                if fabs(denom) > 1e-20:
+                    phi -= numer / denom
+                phi = fmod(phi, 1.0)
+                if phi < 0.0:
+                    phi += 1.0
+
+            # final RSS for this start
+            rss_val = 0.0
             for i in range(N):
                 b  = bidx[i]
                 yi = mag[i] - (betas[b, 0]
-                             + betas[b, 1] * omega
-                             + betas[b, 2] * omega * omega)
-                wi = w[i]
-                di = dust[b]
-                phase_i = fmod(omega * t[i] + phi, 1.0)
+                             + betas[b, 1] * freq
+                             + betas[b, 2] * freq * freq)
+                phase_i = fmod(freq * t[i] + phi, 1.0)
                 if phase_i < 0.0:
                     phase_i += 1.0
-                gi = _interp(gamma, b, phase_i, n_ph)
+                gi    = _interp(gamma, b, phase_i, n_ph)
+                res_i = yi - mu - ebv * dust[b] - A * gi
+                rss_val += w[i] * res_i * res_i
 
-                X00 += wi
-                X01 += wi * di
-                X02 += wi * gi
-                X11 += wi * di * di
-                X12 += wi * di * gi
-                X22 += wi * gi * gi
-                Xy0 += wi * yi
-                Xy1 += wi * di * yi
-                Xy2 += wi * gi * yi
-
-            err = _solve3(X00, X01, X02, X11, X12, X22,
-                          Xy0, Xy1, Xy2, &mu, &ebv, &A)
-            if err:
-                break
-
-            # Newton step for phi
-            numer = 0.0
-            denom = 0.0
-            for i in range(N):
-                b  = bidx[i]
-                yi = mag[i] - (betas[b, 0]
-                             + betas[b, 1] * omega
-                             + betas[b, 2] * omega * omega)
-                wi = w[i]
-                phase_i = fmod(omega * t[i] + phi, 1.0)
-                if phase_i < 0.0:
-                    phase_i += 1.0
-                gi  = _interp(gamma,  b, phase_i, n_ph)
-                dgi = _interp(dgamma, b, phase_i, n_ph)
-                res_i  = yi - mu - ebv * dust[b] - A * gi
-                numer += wi * res_i * (A * dgi)
-                denom += wi * (A * dgi) * (A * dgi)
-
-            if fabs(denom) > 1e-20:
-                phi -= numer / denom
-            phi = fmod(phi, 1.0)
-            if phi < 0.0:
-                phi += 1.0
-
-        # final RSS
-        rss_val = 0.0
-        for i in range(N):
-            b  = bidx[i]
-            yi = mag[i] - (betas[b, 0]
-                         + betas[b, 1] * omega
-                         + betas[b, 2] * omega * omega)
-            phase_i = fmod(omega * t[i] + phi, 1.0)
-            if phase_i < 0.0:
-                phase_i += 1.0
-            gi    = _interp(gamma, b, phase_i, n_ph)
-            res_i = yi - mu - ebv * dust[b] - A * gi
-            rss_val += w[i] * res_i * res_i
-
-        rss_v[k]   = rss_val
-        phi_v[k]   = phi
-        co_v[k, 0] = mu
-        co_v[k, 1] = ebv
-        co_v[k, 2] = A
+            if rss_val < rss_v[k]:
+                rss_v[k]   = rss_val
+                phi_v[k]   = phi
+                co_v[k, 0] = mu
+                co_v[k, 1] = ebv
+                co_v[k, 2] = A
 
     return rss_out, phi_out, coeffs_out
 
@@ -215,17 +221,19 @@ def rss_grid_mb(
     long[:]   bidx,
     double[:, :] gamma,
     double[:, :] dgamma,
-    double[:] omegas,
+    double[:] freqs,
     int n_bands,
     int n_newton = 5,
+    int n_start  = 4,
 ):
     """RSS grid search — Multiband model.
 
     Model per observation (band b, time t_i):
-        mag_i = mu_b + A * gamma_b(omega*t_i + phi)
-    where mu_b is a per-band offset and A is a shared amplitude.
+        mag_i = mu_b + A * gamma_b(freq*t_i + phi)
+    where mu_b is a per-band offset, A is a shared amplitude,
+    and freq = 1/P is in cycles/day.
 
-    Updates alternate between:
+    Updates per (frequency, start) alternate between:
       1. mu_b  (closed-form weighted mean per band)
       2. A     (1-D weighted regression)
       3. phi   (Newton step)
@@ -234,118 +242,118 @@ def rss_grid_mb(
     ----------
     t, mag, w, bidx : per-observation arrays (N,)
     gamma, dgamma : (n_bands, n_phase) template and derivative
-    omegas : (N_freq,) angular frequencies
+    freqs : (N_freq,) frequencies in cycles/day = 1/P
     n_bands : number of bands
-    n_newton : alternating update iterations per frequency
+    n_newton : alternating update iterations per (frequency, start)
+    n_start : number of equally-spaced initial phases to try per frequency
 
     Returns
     -------
     rss    : (N_freq,)
     phi    : (N_freq,)
-    mu_out : (N_freq, n_bands) per-band offsets at best phi
-    A_out  : (N_freq,) shared amplitude at best phi
+    mu_out : (N_freq, n_bands) per-band offsets at best start
+    A_out  : (N_freq,) shared amplitude at best start
     """
     cdef int N      = t.shape[0]
-    cdef int N_freq = omegas.shape[0]
+    cdef int N_freq = freqs.shape[0]
     cdef int n_ph   = gamma.shape[1]
     cdef int nb     = n_bands
 
-    rss_out = np.empty(N_freq,       dtype=np.float64)
-    phi_out = np.empty(N_freq,       dtype=np.float64)
-    mu_out  = np.zeros((N_freq, nb), dtype=np.float64)
-    A_out   = np.zeros(N_freq,       dtype=np.float64)
+    rss_out = np.full(N_freq,        1e300, dtype=np.float64)
+    phi_out = np.zeros(N_freq,             dtype=np.float64)
+    mu_out  = np.zeros((N_freq, nb),       dtype=np.float64)
+    A_out   = np.zeros(N_freq,             dtype=np.float64)
 
     cdef double[:] rss_v    = rss_out
     cdef double[:] phi_v    = phi_out
     cdef double[:, :] mu_v  = mu_out
     cdef double[:] A_v      = A_out
 
-    # per-band accumulators (stack-allocated via typed memoryview on Python array)
     cdef double[:] mu_b   = np.zeros(nb)
     cdef double[:] wsum_b = np.zeros(nb)
     cdef double[:] ysum_b = np.zeros(nb)
 
-    cdef int    i, k, it, bb
+    cdef int    i, k, it, bb, s
     cdef long   b
-    cdef double omega, phi, A, gi, dgi, phase_i, wi
+    cdef double freq, phi, phi0, A, gi, dgi, phase_i, wi
     cdef double A_num, A_den, res_i, rss_val, numer, denom
 
     for k in range(N_freq):
-        omega = omegas[k]
-        phi   = 0.0
-        A     = 1.0
-        for bb in range(nb):
-            mu_b[bb] = 0.0
+        freq = freqs[k]
 
-        for it in range(n_newton):
-
-            # --- step 1: update mu_b for fixed A, phi ---
+        for s in range(n_start):
+            phi0 = s / <double>n_start
+            phi  = phi0
+            A    = 1.0
             for bb in range(nb):
-                wsum_b[bb] = 0.0
-                ysum_b[bb] = 0.0
-            for i in range(N):
-                b  = bidx[i]
-                wi = w[i]
-                phase_i = fmod(omega * t[i] + phi, 1.0)
-                if phase_i < 0.0:
-                    phase_i += 1.0
-                gi = _interp(gamma, b, phase_i, n_ph)
-                wsum_b[b] += wi
-                ysum_b[b] += wi * (mag[i] - A * gi)
-            for bb in range(nb):
-                if wsum_b[bb] > 1e-30:
-                    mu_b[bb] = ysum_b[bb] / wsum_b[bb]
+                mu_b[bb] = 0.0
 
-            # --- step 2: update A for fixed mu_b, phi ---
-            A_num = 0.0
-            A_den = 0.0
-            for i in range(N):
-                b  = bidx[i]
-                wi = w[i]
-                phase_i = fmod(omega * t[i] + phi, 1.0)
-                if phase_i < 0.0:
-                    phase_i += 1.0
-                gi     = _interp(gamma, b, phase_i, n_ph)
-                A_num += wi * (mag[i] - mu_b[b]) * gi
-                A_den += wi * gi * gi
-            if A_den > 1e-30:
-                A = A_num / A_den
+            for it in range(n_newton):
+                for bb in range(nb):
+                    wsum_b[bb] = 0.0
+                    ysum_b[bb] = 0.0
+                for i in range(N):
+                    b  = bidx[i]
+                    wi = w[i]
+                    phase_i = fmod(freq * t[i] + phi, 1.0)
+                    if phase_i < 0.0:
+                        phase_i += 1.0
+                    gi = _interp(gamma, b, phase_i, n_ph)
+                    wsum_b[b] += wi
+                    ysum_b[b] += wi * (mag[i] - A * gi)
+                for bb in range(nb):
+                    if wsum_b[bb] > 1e-30:
+                        mu_b[bb] = ysum_b[bb] / wsum_b[bb]
 
-            # --- step 3: Newton step for phi ---
-            numer = 0.0
-            denom = 0.0
+                A_num = 0.0
+                A_den = 0.0
+                for i in range(N):
+                    b  = bidx[i]
+                    wi = w[i]
+                    phase_i = fmod(freq * t[i] + phi, 1.0)
+                    if phase_i < 0.0:
+                        phase_i += 1.0
+                    gi     = _interp(gamma, b, phase_i, n_ph)
+                    A_num += wi * (mag[i] - mu_b[b]) * gi
+                    A_den += wi * gi * gi
+                if A_den > 1e-30:
+                    A = A_num / A_den
+
+                numer = 0.0
+                denom = 0.0
+                for i in range(N):
+                    b  = bidx[i]
+                    wi = w[i]
+                    phase_i = fmod(freq * t[i] + phi, 1.0)
+                    if phase_i < 0.0:
+                        phase_i += 1.0
+                    gi    = _interp(gamma,  b, phase_i, n_ph)
+                    dgi   = _interp(dgamma, b, phase_i, n_ph)
+                    res_i = mag[i] - mu_b[b] - A * gi
+                    numer += wi * res_i * (A * dgi)
+                    denom += wi * (A * dgi) * (A * dgi)
+                if fabs(denom) > 1e-20:
+                    phi -= numer / denom
+                phi = fmod(phi, 1.0)
+                if phi < 0.0:
+                    phi += 1.0
+
+            # final RSS for this start
+            rss_val = 0.0
             for i in range(N):
                 b  = bidx[i]
-                wi = w[i]
-                phase_i = fmod(omega * t[i] + phi, 1.0)
+                phase_i = fmod(freq * t[i] + phi, 1.0)
                 if phase_i < 0.0:
                     phase_i += 1.0
-                gi    = _interp(gamma,  b, phase_i, n_ph)
-                dgi   = _interp(dgamma, b, phase_i, n_ph)
+                gi    = _interp(gamma, b, phase_i, n_ph)
                 res_i = mag[i] - mu_b[b] - A * gi
-                numer += wi * res_i * (A * dgi)
-                denom += wi * (A * dgi) * (A * dgi)
-            if fabs(denom) > 1e-20:
-                phi -= numer / denom
-            phi = fmod(phi, 1.0)
-            if phi < 0.0:
-                phi += 1.0
+                rss_val += w[i] * res_i * res_i
 
-        # final RSS
-        rss_val = 0.0
-        for i in range(N):
-            b  = bidx[i]
-            phase_i = fmod(omega * t[i] + phi, 1.0)
-            if phase_i < 0.0:
-                phase_i += 1.0
-            gi    = _interp(gamma, b, phase_i, n_ph)
-            res_i = mag[i] - mu_b[b] - A * gi
-            rss_val += w[i] * res_i * res_i
-
-        rss_v[k] = rss_val
-        phi_v[k] = phi
-        A_v[k]   = A
-        for bb in range(nb):
-            mu_v[k, bb] = mu_b[bb]
+            if rss_val < rss_v[k]:
+                rss_v[k] = rss_val
+                phi_v[k] = phi
+                A_v[k]   = A
+                for bb in range(nb):
+                    mu_v[k, bb] = mu_b[bb]
 
     return rss_out, phi_out, mu_out, A_out
