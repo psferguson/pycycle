@@ -5,13 +5,14 @@ Two fitting modes are supported, selected automatically based on the template:
 rr-templates mode (template.dust is not None)
     Full physics model: mu (distance modulus), EBV (dust), A (amplitude), phi (phase).
     Model per observation (band b, time t):
-        mag = beta_b(omega) + mu + EBV * dust_b + A * gamma_b(omega*t + phi)
-    where beta_b(omega) = c0_b + p1_b*omega + p2_b*omega^2.
+        mag = beta_b(P) + mu + EBV * dust_b + A * gamma_b(freq*t + phi)
+    where beta_b(P) = c0_b + p1_b*P + p2_b*P^2, P = 1/freq is the period in days,
+    and freq = 1/P is in cycles/day.
 
 Multiband mode (template.dust is None)
     Simplified model: per-band offset mu_b, shared amplitude A, phase phi.
     Model per observation:
-        mag = mu_b + A * gamma_b(omega*t + phi)
+        mag = mu_b + A * gamma_b(freq*t + phi)
 
 In both modes the inner loop is accelerated by a Cython extension when available,
 falling back to a pure-NumPy implementation otherwise.
@@ -67,12 +68,13 @@ def _rss_grid_rr_py(t, mag, w, bidx, gamma, dgamma, dust, betas, freqs, n_newton
     coeffs_out = np.zeros((N_freq, 3))
 
     for k, freq in enumerate(freqs):
+        period = 1.0 / freq
         for s in range(n_start):
             phi = s / n_start
             mu = ebv = A = 0.0
 
             for _ in range(n_newton):
-                beta_corr = betas[bidx, 0] + betas[bidx, 1] * freq + betas[bidx, 2] * freq * freq
+                beta_corr = betas[bidx, 0] + betas[bidx, 1] * period + betas[bidx, 2] * period * period
                 y = mag - beta_corr
                 ph = (freq * t + phi) % 1.0
                 g = _interp_template(gamma, bidx, ph)
@@ -91,7 +93,7 @@ def _rss_grid_rr_py(t, mag, w, bidx, gamma, dgamma, dust, betas, freqs, n_newton
                 if abs(denom) > 1e-20:
                     phi = (phi - numer / denom) % 1.0
 
-            beta_corr = betas[bidx, 0] + betas[bidx, 1] * freq + betas[bidx, 2] * freq * freq
+            beta_corr = betas[bidx, 0] + betas[bidx, 1] * period + betas[bidx, 2] * period * period
             y = mag - beta_corr
             ph = (freq * t + phi) % 1.0
             g = _interp_template(gamma, bidx, ph)
@@ -233,9 +235,10 @@ class TemplateFitResult:
             mu = self.best_coeffs['mu']
             ebv = self.best_coeffs['EBV']
             A = self.best_coeffs['A']
+            period = 1.0 / freq
             beta = (template.betas[bidx, 0]
-                    + template.betas[bidx, 1] * freq
-                    + template.betas[bidx, 2] * freq ** 2)
+                    + template.betas[bidx, 1] * period
+                    + template.betas[bidx, 2] * period ** 2)
             return beta + mu + ebv * template.dust[bidx] + A * g
         else:
             mu_arr = np.array([self.best_coeffs[f'mu_{b}'] for b in template.bands])
@@ -308,9 +311,10 @@ class TemplateFitResult:
                 mu = self.best_coeffs['mu']
                 ebv = self.best_coeffs['EBV']
                 A = self.best_coeffs['A']
+                period = 1.0 / freq
                 beta = (template.betas[bi, 0]
-                        + template.betas[bi, 1] * freq
-                        + template.betas[bi, 2] * freq ** 2)
+                        + template.betas[bi, 1] * period
+                        + template.betas[bi, 2] * period ** 2)
                 m_pred = beta + mu + ebv * template.dust[bi] + A * g_dense
             else:
                 mu_b = self.best_coeffs.get(f'mu_{fname}', 0.0)

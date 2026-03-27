@@ -77,10 +77,10 @@ def rss_grid_rr(
     """RSS grid search — rr-templates model.
 
     Model per observation (band b, time t_i):
-        mag_i = beta_b(freq) + mu + EBV * dust_b + A * gamma_b(freq*t_i + phi)
+        mag_i = beta_b(P) + mu + EBV * dust_b + A * gamma_b(freq*t_i + phi)
     where
-        beta_b(freq) = c0_b + p1_b * freq + p2_b * freq^2
-    and freq = 1/P is in cycles/day.
+        beta_b(P) = c0_b + p1_b * P + p2_b * P^2
+    and freq = 1/P is in cycles/day, P is the period in days.
 
     Parameters
     ----------
@@ -116,13 +116,14 @@ def rss_grid_rr(
 
     cdef int    i, k, it, s, err
     cdef long   b
-    cdef double freq, phi, phi0, mu, ebv, A
+    cdef double freq, period, phi, phi0, mu, ebv, A
     cdef double yi, wi, di, gi, dgi, phase_i
     cdef double X00, X01, X02, X11, X12, X22, Xy0, Xy1, Xy2
     cdef double numer, denom, rss_val, res_i
 
     for k in range(N_freq):
-        freq = freqs[k]
+        freq   = freqs[k]
+        period = 1.0 / freq
 
         for s in range(n_start):
             phi0 = s / <double>n_start
@@ -139,8 +140,8 @@ def rss_grid_rr(
                 for i in range(N):
                     b  = bidx[i]
                     yi = mag[i] - (betas[b, 0]
-                                 + betas[b, 1] * freq
-                                 + betas[b, 2] * freq * freq)
+                                 + betas[b, 1] * period
+                                 + betas[b, 2] * period * period)
                     wi = w[i]
                     di = dust[b]
                     phase_i = fmod(freq * t[i] + phi, 1.0)
@@ -168,8 +169,8 @@ def rss_grid_rr(
                 for i in range(N):
                     b  = bidx[i]
                     yi = mag[i] - (betas[b, 0]
-                                 + betas[b, 1] * freq
-                                 + betas[b, 2] * freq * freq)
+                                 + betas[b, 1] * period
+                                 + betas[b, 2] * period * period)
                     wi = w[i]
                     phase_i = fmod(freq * t[i] + phi, 1.0)
                     if phase_i < 0.0:
@@ -191,8 +192,8 @@ def rss_grid_rr(
             for i in range(N):
                 b  = bidx[i]
                 yi = mag[i] - (betas[b, 0]
-                             + betas[b, 1] * freq
-                             + betas[b, 2] * freq * freq)
+                             + betas[b, 1] * period
+                             + betas[b, 2] * period * period)
                 phase_i = fmod(freq * t[i] + phi, 1.0)
                 if phase_i < 0.0:
                     phase_i += 1.0
