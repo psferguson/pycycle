@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61", "Cython>=3", "numpy"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "psearch"
+version = "0.24.0"
+description = "Hybrid Lomb-Scargle / Lafler-Kinman period finder for multiband variable star light curves"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "astropy",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+fast = ["numba"]
+dev = ["pytest", "Cython>=3"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["psearch*"]
+
+[tool.setuptools.package-data]
+"psearch.data" = ["*.tab"]

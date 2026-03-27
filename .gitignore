@@ -1,0 +1,13 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Compiled Python / Cython
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+
+# Claude Code project memory
+.claude/
