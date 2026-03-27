@@ -1,4 +1,4 @@
-"""Plotting routines for psearch results.
+"""Plotting routines for pycycle results.
 
 Three plot types are provided:
 

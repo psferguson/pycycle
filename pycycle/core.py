@@ -1,4 +1,4 @@
-"""Core psearch API: PeriodSearch class and PeriodSearchResult."""
+"""Core pycycle API: PeriodSearch class and PeriodSearchResult."""
 
 import numpy as np
 
@@ -7,7 +7,7 @@ from .results import results_table
 from .plotting import plot_observations, plot_periodogram, plot_phased
 
 try:
-    from psearch._ext._psearch_c import scargle_fast  # noqa: F401
+    from pycycle._ext._pycycle_c import scargle_fast  # noqa: F401
     _BACKEND = 'C/Cython'
 except ImportError:
     _BACKEND = 'pure Python'
@@ -58,7 +58,7 @@ class PeriodSearchResult:
     # result extraction
     # ------------------------------------------------------------------
 
-    def top_periods(self, n=10, filter_idx=None, write=False, filename='psearch_results.csv'):
+    def top_periods(self, n=10, filter_idx=None, write=False, filename='pycycle_results.csv'):
         """Return a table of the top *n* period candidates.
 
         Parameters
@@ -91,12 +91,12 @@ class PeriodSearchResult:
 
     def plot_observations(self, **kwargs):
         """Plot the raw multi-band light curve.  Passes keyword args to
-        :func:`~psearch.plotting.plot_observations`."""
+        :func:`~pycycle.plotting.plot_observations`."""
         plot_observations(self._hjd, self._mag, self._filts, self.filtnams, **kwargs)
 
     def plot_periodogram(self, **kwargs):
         """Plot the PSI periodogram.  Passes keyword args to
-        :func:`~psearch.plotting.plot_periodogram`."""
+        :func:`~pycycle.plotting.plot_periodogram`."""
         plot_periodogram(self.freq, self.psi_m, self.thresh_m, self.filtnams, **kwargs)
 
     def plot_phased(self, period=None, **kwargs):
@@ -134,7 +134,7 @@ class PeriodSearch:
     Examples
     --------
     >>> import numpy as np
-    >>> from psearch import PeriodSearch
+    >>> from pycycle import PeriodSearch
     >>> hjd = np.loadtxt('B1392all.tab', usecols=0)
     >>> # ... load mag, magerr, filts ...
     >>> ps = PeriodSearch(hjd, mag, magerr, filts, filtnams=['B', 'V'])

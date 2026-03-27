@@ -1,4 +1,4 @@
-"""Result extraction and formatting for psearch periodograms."""
+"""Result extraction and formatting for pycycle periodograms."""
 
 import numpy as np
 from astropy.table import Table
@@ -6,7 +6,7 @@ from astropy.table import Table
 __all__ = ["results_table"]
 
 
-def results_table(periods, psi, thresh, n=10, write=False, filename='psearch_results.csv'):
+def results_table(periods, psi, thresh, n=10, write=False, filename='pycycle_results.csv'):
     """Return a table of the top *n* period candidates ranked by PSI power.
 
     Local maxima in *psi* are identified and the *n* strongest are returned.

@@ -7,10 +7,10 @@ try:
     import numpy
 
     ext = Extension(
-        "psearch._ext._psearch_c",
+        "pycycle._ext._pycycle_c",
         sources=[
-            "psearch/_ext/_psearch_c.pyx",
-            "psearch/_ext/psearch_py_c.c",
+            "pycycle/_ext/_pycycle_c.pyx",
+            "pycycle/_ext/pycycle_py_c.c",
         ],
         include_dirs=[numpy.get_include()],
     )

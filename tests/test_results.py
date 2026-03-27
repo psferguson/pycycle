@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from psearch.results import results_table
+from pycycle.results import results_table
 
 
 def _make_periodogram(n=500, seed=0):

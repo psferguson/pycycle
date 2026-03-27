@@ -7,8 +7,8 @@ __all__ = [
 
 def results_table(xx=None, yy=None, ee=None, n=None,
                   write=True, filename='tmp.csv'):
-    """Return a table of the top n results from a psearch.
-    The inputs (xx, yy, and ee) are the results from psearch_py.
+    """Return a table of the top n results from a pycycle run.
+    The inputs (xx, yy, and ee) are the results from pycycle.
 
     Parameters
     ----------

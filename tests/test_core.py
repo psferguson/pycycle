@@ -7,12 +7,12 @@ import importlib.resources
 import numpy as np
 import pytest
 
-from psearch import PeriodSearch
+from pycycle import PeriodSearch
 
 
 def _load_b1392():
     """Load the B1392all.tab sample data bundled with the package."""
-    data_path = importlib.resources.files('psearch.data').joinpath('B1392all.tab')
+    data_path = importlib.resources.files('pycycle.data').joinpath('B1392all.tab')
     hjd, mag, magerr, filts = np.loadtxt(str(data_path), unpack=True)
     # apply the standard quality cut used in the original self-test
     ok = (magerr >= 0.0) & (magerr <= 0.2)

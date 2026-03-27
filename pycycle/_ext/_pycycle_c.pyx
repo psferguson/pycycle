@@ -1,5 +1,5 @@
-# Cython wrapper for the psearch C extensions
-# Wraps scargle_fast_c and ctheta_slave_c from psearch_py_c.c
+# Cython wrapper for the pycycle C extensions
+# Wraps scargle_fast_c and ctheta_slave_c from pycycle_py_c.c
 
 import cython
 import numpy as np

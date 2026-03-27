@@ -7,7 +7,7 @@ to a numba-JIT-compiled pure-Python version.
 import numpy as np
 
 try:
-    from psearch._ext._psearch_c import scargle_fast as _scargle_fast_c
+    from pycycle._ext._pycycle_c import scargle_fast as _scargle_fast_c
     _USE_C = True
 except ImportError:
     _USE_C = False

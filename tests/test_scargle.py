@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from psearch.scargle import scargle_fast
+from pycycle.scargle import scargle_fast
 
 
 def _make_sinusoid(period=0.5, n=200, noise=0.05, seed=42):

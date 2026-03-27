@@ -7,7 +7,7 @@ numba-JIT-compiled pure-Python version.
 import numpy as np
 
 try:
-    from psearch._ext._psearch_c import ctheta_slave as _ctheta_slave_c
+    from pycycle._ext._pycycle_c import ctheta_slave as _ctheta_slave_c
     _USE_C = True
 except ImportError:
     _USE_C = False

@@ -1,4 +1,4 @@
-"""psearch — hybrid period-finding for multiband variable-star light curves.
+"""pycycle — hybrid period-finding for multiband variable-star light curves.
 
 Based on Saha & Vivas (2017, AJ 154, 231):
 "A Hybrid Algorithm for Period Analysis from Multiband Data with Sparse and
@@ -6,7 +6,7 @@ Irregular Sampling for Arbitrary Light-curve Shapes"
 
 Quick start::
 
-    from psearch import PeriodSearch
+    from pycycle import PeriodSearch
     import numpy as np
 
     hjd, mag, magerr, filts = np.loadtxt('data.tab', unpack=True)
