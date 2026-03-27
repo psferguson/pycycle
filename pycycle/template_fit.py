@@ -61,17 +61,24 @@ def _interp_template(gamma, bidx, phases):
     return (1.0 - frac) * gamma[bidx, lo] + frac * gamma[bidx, hi]
 
 
-def _rss_grid_rr_py(t, mag, w, bidx, gamma, dgamma, dust, betas, freqs, n_newton, n_start):
+def _rss_grid_rr_py(t, mag, w, bidx, gamma, dgamma, dust, betas, freqs,
+                    n_newton, n_start, warm_start=False):
     N_freq = len(freqs)
     rss_out = np.full(N_freq, np.inf)
     phi_out = np.zeros(N_freq)
     coeffs_out = np.zeros((N_freq, 3))
 
+    prev_phi = prev_mu = prev_ebv = prev_A = 0.0
+
     for k, freq in enumerate(freqs):
         period = 1.0 / freq
-        for s in range(n_start):
-            phi = s / n_start
-            mu = ebv = A = 0.0
+        n_iter = 1 if warm_start else n_start
+        for s in range(n_iter):
+            if warm_start:
+                phi, mu, ebv, A = prev_phi, prev_mu, prev_ebv, prev_A
+            else:
+                phi = s / n_start
+                mu = ebv = A = 0.0
 
             for _ in range(n_newton):
                 beta_corr = betas[bidx, 0] + betas[bidx, 1] * period + betas[bidx, 2] * period * period
@@ -103,6 +110,9 @@ def _rss_grid_rr_py(t, mag, w, bidx, gamma, dgamma, dust, betas, freqs, n_newton
                 rss_out[k] = rss
                 phi_out[k] = phi
                 coeffs_out[k] = [mu, ebv, A]
+
+        if warm_start:
+            prev_phi, prev_mu, prev_ebv, prev_A = phi_out[k], *coeffs_out[k]
 
     return rss_out, phi_out, coeffs_out
 
@@ -349,16 +359,25 @@ class TemplateFitter:
         :func:`~pycycle.templates.load_multiband_templates`.
     n_newton : int
         Number of Newton iterations per frequency (default 5).
+    n_start : int
+        Number of equally-spaced initial phases to try per frequency (default 4).
+        Ignored when ``warm_start=True``.
     use_errors : bool
         If True (default), weight observations by 1/sigma^2.
+    warm_start : bool
+        If True, carry ``(phi, mu, ebv, A)`` from each frequency as the initial
+        guess for the next instead of using ``n_start`` random restarts.
+        ~4× faster; best when searching over a sorted, dense frequency grid
+        (the typical catalog-search case).  Introduced by Stringer et al. (2019).
     """
 
     def __init__(self, template: RRTemplate, n_newton: int = 5, n_start: int = 4,
-                 use_errors: bool = True):
+                 use_errors: bool = True, warm_start: bool = False):
         self.template = template
         self.n_newton = n_newton
         self.n_start = n_start
         self.use_errors = use_errors
+        self.warm_start = warm_start
         self._backend = 'C/Cython' if _USE_C else 'pure Python'
 
     def fit(self, hjd, mag, magerr, filts, filtnams,
@@ -414,8 +433,9 @@ class TemplateFitter:
             ptest = _make_period_grid(hjd, pmin, dphi, pmax)
         print(f'TemplateFitter: backend = {self._backend}')
         print(f'TemplateFitter: template = {template.name}')
+        start_desc = 'warm' if self.warm_start else f'{self.n_start} starts'
         print(f'TemplateFitter: {len(ptest)} test periods, '
-              f'{self.n_newton} Newton iters × {self.n_start} starts')
+              f'{self.n_newton} Newton iters × {start_desc}')
 
         gamma = np.ascontiguousarray(template.gamma, dtype=np.float64)
         dg = np.ascontiguousarray(template.dgamma(), dtype=np.float64)
@@ -427,14 +447,15 @@ class TemplateFitter:
             # rr-templates mode
             dust = np.ascontiguousarray(template.dust, dtype=np.float64)
             betas = np.ascontiguousarray(template.betas, dtype=np.float64)
+            ws = int(self.warm_start)
             if _USE_C:
                 rss, phi, coeffs = rss_grid_rr(
                     hjd, mag, w, bidx, gamma, dg, dust, betas, freqs,
-                    self.n_newton, self.n_start)
+                    self.n_newton, self.n_start, ws)
             else:
                 rss, phi, coeffs = _rss_grid_rr_py(
                     hjd, mag, w, bidx, gamma, dg, dust, betas, freqs,
-                    self.n_newton, self.n_start)
+                    self.n_newton, self.n_start, bool(ws))
             coeffs_raw = coeffs
         else:
             # Multiband mode

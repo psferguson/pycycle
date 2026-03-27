@@ -71,8 +71,9 @@ def rss_grid_rr(
     double[:] dust,
     double[:, :] betas,
     double[:] freqs,
-    int n_newton = 5,
-    int n_start  = 4,
+    int n_newton   = 5,
+    int n_start    = 4,
+    int warm_start = 0,
 ):
     """RSS grid search — rr-templates model.
 
@@ -95,6 +96,10 @@ def rss_grid_rr(
     freqs : (N_freq,) frequencies in cycles/day = 1/P
     n_newton : Newton iterations per (frequency, start)
     n_start : number of equally-spaced initial phases to try per frequency
+              (ignored when warm_start=1)
+    warm_start : if 1, carry (phi, mu, ebv, A) from the previous frequency
+                 as the starting point instead of using n_start random restarts.
+                 ~4x faster; best when the RSS landscape is smooth (sorted freqs).
 
     Returns
     -------
@@ -114,23 +119,35 @@ def rss_grid_rr(
     cdef double[:] phi_v   = phi_out
     cdef double[:, :] co_v = coeffs_out
 
-    cdef int    i, k, it, s, err
+    cdef int    i, k, it, s, n_iter, err
     cdef long   b
     cdef double freq, period, phi, phi0, mu, ebv, A
+    cdef double prev_phi, prev_mu, prev_ebv, prev_A
     cdef double yi, wi, di, gi, dgi, phase_i
     cdef double X00, X01, X02, X11, X12, X22, Xy0, Xy1, Xy2
     cdef double numer, denom, rss_val, res_i
+
+    # warm-start state (carried between frequencies)
+    prev_phi = 0.0; prev_mu = 0.0; prev_ebv = 0.0; prev_A = 0.0
+
+    n_iter = 1 if warm_start else n_start
 
     for k in range(N_freq):
         freq   = freqs[k]
         period = 1.0 / freq
 
-        for s in range(n_start):
-            phi0 = s / <double>n_start
-            phi  = phi0
-            mu   = 0.0
-            ebv  = 0.0
-            A    = 0.0
+        for s in range(n_iter):
+            if warm_start:
+                phi = prev_phi
+                mu  = prev_mu
+                ebv = prev_ebv
+                A   = prev_A
+            else:
+                phi0 = s / <double>n_start
+                phi  = phi0
+                mu   = 0.0
+                ebv  = 0.0
+                A    = 0.0
 
             for it in range(n_newton):
                 X00 = 0.0; X01 = 0.0; X02 = 0.0
@@ -207,6 +224,13 @@ def rss_grid_rr(
                 co_v[k, 0] = mu
                 co_v[k, 1] = ebv
                 co_v[k, 2] = A
+
+        # update warm-start state from this frequency's best solution
+        if warm_start:
+            prev_phi = phi_v[k]
+            prev_mu  = co_v[k, 0]
+            prev_ebv = co_v[k, 1]
+            prev_A   = co_v[k, 2]
 
     return rss_out, phi_out, coeffs_out
 
