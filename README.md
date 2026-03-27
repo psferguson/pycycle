@@ -65,7 +65,7 @@ multi-start mode, following the optimisation in Stringer et al. (2019).
 136 RRab and 144 RRc individual DECam griz templates, normalised to [0, 1].
 
 ```
-git clone https://github.com/kbbaeza/Multiband-templates
+git clone https://github.com/KarinaBaezaV/Multiband-templates
 ```
 
 > [Baeza-Villagra et al. 2025 (A&A, arXiv:2501.03813)](https://arxiv.org/abs/2501.03813).
