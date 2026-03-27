@@ -12,3 +12,4 @@ __pycache__/
 # Claude Code project memory
 .claude/
 .ipynb_checkpoints/
+pycycle/_ext/*
