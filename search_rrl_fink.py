@@ -14,14 +14,16 @@ Options
     --dphi         FLOAT  Phase resolution (default: 0.02)
     --min-obs      N      Minimum good observations (default: 10)
     --no-varfilter        Disable variability pre-filter
+    --use-sfd             Look up SFD E(B-V) and pre-subtract dust from magnitudes
 
 Pipeline
 --------
 1. Parse light curves from prvDiaSources (scienceFlux, bands g/r/i).
 2. Quality cut: magerr in (0, 0.2].
 3. Variability pre-filter (S19 §3.2): lchi_med ≥ 0.5 and sig_max ≥ 0.
-4. RRab template fit (DES gri + LSST correction, warm_start for speed).
-5. Save all fit results; add quality flags for post-hoc filtering.
+4. Optional SFD dust pre-subtraction (--use-sfd).
+5. RRab template fit (DES gri + LSST correction, warm_start for speed).
+6. Save all fit results; add quality flags for post-hoc filtering.
 
 Quality notes
 -------------
@@ -37,12 +39,26 @@ two metrics that are robust to underestimated errors:
                Measures how much the best period stands out.
                Typical RRAB ≥ 0.5; random or non-periodic objects < 0.5.
 
+SFD dust note
+-------------
+With --use-sfd the SFD E(B-V) for each object is looked up from the Schlegel,
+Finkbeiner & Davis (1998) dust map and pre-subtracted from the magnitudes before
+fitting.  The fitted EBV in the output is then a residual δEBV = EBV_fit − EBV_SFD.
+In low-dust fields (EBV_SFD < 0.05) this correction is negligible.  In high-dust
+fields it removes the dominant degeneracy between μ and E(B-V).
+
+Note: with gri-only data the template colour (g−i ≈ 0.85 from DES betas) can
+differ systematically from observed LSST colours (~0.27 in this Virgo field).
+The model compensates with EBV ≈ −0.30, which SFD cannot fix — it reflects a
+template/calibration colour offset, not real dust.  Use EBV values with caution.
+
 Output columns
 --------------
     diaObjectId   int64   Object identifier
     period        float   Best-fit period (days)
     mu            float   Distance modulus
-    EBV           float   E(B-V) dust extinction (can be negative with gri only)
+    EBV           float   Fitted E(B-V); residual δEBV if --use-sfd was set
+    EBV_SFD       float   SFD E(B-V) from dust map (NaN if --use-sfd not used)
     A             float   Template amplitude (physical range: 0.3–1.5 for RRab)
     phi           float   Phase at first observation epoch
     n_good        int     Number of good observations used
@@ -109,13 +125,17 @@ def _fit_one(args: tuple) -> dict | None:
     """Fit a single object; called in a worker process."""
     from pycycle.template_fit import TemplateFitter
 
-    (obj_id, t, m, me, bi, n_good, lchi_med, sig_max, fit_kwargs) = args
+    (obj_id, t, m, me, bi, n_good, lchi_med, sig_max, ebv_sfd, fit_kwargs) = args
 
-    # Null (constant) model RSS — weighted variance
-    w         = 1.0 / np.maximum(me ** 2, 1e-30)
-    w_tot     = w.sum()
-    m_wmean   = np.dot(w, m) / w_tot
-    rss_null  = float(np.dot(w, (m - m_wmean) ** 2))
+    # Optional SFD dust pre-subtraction: absorb known dust into magnitudes so
+    # the fitted EBV is a small residual δEBV rather than the full extinction.
+    if np.isfinite(ebv_sfd):
+        m = m - ebv_sfd * _TEMPLATE.dust[bi]
+
+    # Null (constant) model RSS — weighted variance of (dust-corrected) magnitudes
+    w        = 1.0 / np.maximum(me ** 2, 1e-30)
+    m_wmean  = np.dot(w, m) / w.sum()
+    rss_null = float(np.dot(w, (m - m_wmean) ** 2))
 
     try:
         fitter = TemplateFitter(_TEMPLATE, n_newton=5, warm_start=True)
@@ -137,7 +157,8 @@ def _fit_one(args: tuple) -> dict | None:
         'diaObjectId': obj_id,
         'period':      float(result.best_period),
         'mu':          mu,
-        'EBV':         EBV,
+        'EBV':         EBV,      # residual δEBV when --use-sfd; full EBV otherwise
+        'EBV_SFD':     ebv_sfd,  # NaN when --use-sfd not set
         'A':           A,
         'phi':         phi,
         'n_good':      n_good,
@@ -185,22 +206,49 @@ def parse_light_curve(srcs) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndar
 # Main
 # ---------------------------------------------------------------------------
 
+def lookup_sfd_ebv(df: pd.DataFrame) -> np.ndarray:
+    """Vectorised SFD E(B-V) lookup for all objects in df.
+
+    Reads ra/dec from diaObject['ra'] / diaObject['dec'].
+    Returns an array of shape (len(df),) with NaN on failure.
+    """
+    from dustmaps.sfd import SFDQuery
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+
+    ra  = np.array([row['diaObject']['ra']  for _, row in df.iterrows()], dtype=float)
+    dec = np.array([row['diaObject']['dec'] for _, row in df.iterrows()], dtype=float)
+    coords = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+    return np.asarray(SFDQuery()(coords), dtype=float)
+
+
 def build_work_items(
     df: pd.DataFrame,
     min_obs: int,
     varfilter: bool,
+    use_sfd: bool,
     fit_kwargs: dict,
 ) -> list[tuple]:
     """Parse all rows into work items for the worker pool."""
     from pycycle.lsdb_utils import compute_variability_features
 
-    items       = []
-    n_skip_obs  = 0
-    n_skip_var  = 0
+    # SFD lookup — vectorised over the whole catalog (fast)
+    if use_sfd:
+        print('Looking up SFD E(B-V) for all objects ...')
+        ebv_sfd_all = lookup_sfd_ebv(df)
+        print(f'  SFD E(B-V): min={ebv_sfd_all.min():.4f}  max={ebv_sfd_all.max():.4f}'
+              f'  median={np.median(ebv_sfd_all):.4f}')
+    else:
+        ebv_sfd_all = np.full(len(df), np.nan)
 
-    for _, row in df.iterrows():
-        obj_id = int(row['diaObjectId'])
-        srcs   = row['prvDiaSources']
+    items      = []
+    n_skip_obs = 0
+    n_skip_var = 0
+
+    for row_idx, (_, row) in enumerate(df.iterrows()):
+        obj_id  = int(row['diaObjectId'])
+        srcs    = row['prvDiaSources']
+        ebv_sfd = float(ebv_sfd_all[row_idx])
 
         t, m, me, bi = parse_light_curve(srcs)
         n_good = len(t)
@@ -225,7 +273,7 @@ def build_work_items(
             lchi_med = np.nan
             sig_max  = np.nan
 
-        items.append((obj_id, t, m, me, bi, n_good, lchi_med, sig_max, fit_kwargs))
+        items.append((obj_id, t, m, me, bi, n_good, lchi_med, sig_max, ebv_sfd, fit_kwargs))
 
     print(
         f'Objects: {len(df)} total | {n_skip_obs} skipped (few obs) '
@@ -247,6 +295,7 @@ def main() -> None:
     parser.add_argument('--dphi',         type=float, default=0.02,         help='Phase resolution')
     parser.add_argument('--min-obs',      type=int,   default=10,           help='Min good obs')
     parser.add_argument('--no-varfilter', action='store_true',              help='Skip variability filter')
+    parser.add_argument('--use-sfd',      action='store_true',              help='Look up SFD E(B-V) and pre-subtract dust')
     args = parser.parse_args()
 
     n_workers  = args.workers or mp.cpu_count()
@@ -258,6 +307,7 @@ def main() -> None:
     print(f'Period   : [{args.pmin}, {args.pmax}] days  dphi={args.dphi}')
     print(f'Min obs  : {args.min_obs}')
     print(f'Var filt : {not args.no_varfilter}')
+    print(f'SFD dust : {args.use_sfd}')
     print()
 
     t0_total = time.perf_counter()
@@ -265,7 +315,7 @@ def main() -> None:
     print(f'Loaded {len(df)} objects in {time.perf_counter()-t0_total:.1f}s')
 
     t0    = time.perf_counter()
-    items = build_work_items(df, args.min_obs, not args.no_varfilter, fit_kwargs)
+    items = build_work_items(df, args.min_obs, not args.no_varfilter, args.use_sfd, fit_kwargs)
     print(f'Parsed light curves in {time.perf_counter()-t0:.1f}s')
 
     if not items:

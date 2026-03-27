@@ -2,8 +2,7 @@
 
 **pycycle** is a hybrid Lomb-Scargle / Lafler-Kinman period finder for multiband
 variable-star light curves, based on
-[Saha & Vivas (2017, AJ 154, 231)](https://doi.org/10.3847/1538-3881/aa73d9).
-
+[Saha & Vivas (2017, AJ 154, 231)](https://ui.adsabs.harvard.edu/abs/2017AJ....154..231S)
 It also includes a fast Cython-accelerated RR Lyrae template fitter and utilities
 for catalog-scale searches on Rubin LSST data via [LSDB](https://lsdb.io).
 
@@ -68,7 +67,7 @@ multi-start mode, following the optimisation in Stringer et al. (2019).
 git clone https://github.com/KarinaBaezaV/Multiband-templates
 ```
 
-> [Baeza-Villagra et al. 2025 (A&A, arXiv:2501.03813)](https://arxiv.org/abs/2501.03813).
+> [Baeza-Villagra et al. 2025](https://ui.adsabs.harvard.edu/abs/2025A%26A...694A..72B/abstract).
 > Please cite this work if you use these templates.
 
 ```python

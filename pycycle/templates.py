@@ -9,7 +9,7 @@ rr-templates (Long / Stringer et al.)
     Cite: Stringer et al. 2019, AJ 157, 187
 
 Multiband-templates (Baeza-Villagra et al.)
-    https://github.com/kbbaeza/Multiband-templates
+    https://github.com/KarinaBaezaV/Multiband-templates
     ZIP archives of individual normalised star templates
     Cite: Baeza-Villagra et al. 2025, A&A, arXiv:2501.03813
 """
