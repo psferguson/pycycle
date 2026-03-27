@@ -6,7 +6,7 @@ try:
     from Cython.Build import cythonize
     import numpy
 
-    ext = Extension(
+    ext_period = Extension(
         "pycycle._ext._pycycle_c",
         sources=[
             "pycycle/_ext/_pycycle_c.pyx",
@@ -14,8 +14,13 @@ try:
         ],
         include_dirs=[numpy.get_include()],
     )
+    ext_template = Extension(
+        "pycycle._ext.template_fit_c",
+        sources=["pycycle/_ext/template_fit_c.pyx"],
+        include_dirs=[numpy.get_include()],
+    )
     ext_modules = cythonize(
-        [ext],
+        [ext_period, ext_template],
         compiler_directives={"boundscheck": False, "wraparound": False},
     )
 except Exception:

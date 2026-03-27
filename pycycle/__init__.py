@@ -18,6 +18,10 @@ Quick start::
 
 from .core import PeriodSearch, PeriodSearchResult
 from .results import results_table
+from .templates import (load_rr_template, load_multiband_template,
+                         load_multiband_templates, average_multiband_templates,
+                         RRTemplate)
+from .template_fit import TemplateFitter, TemplateFitResult
 
 __version__ = '0.24.0'
 
@@ -25,5 +29,12 @@ __all__ = [
     'PeriodSearch',
     'PeriodSearchResult',
     'results_table',
+    'RRTemplate',
+    'load_rr_template',
+    'load_multiband_template',
+    'load_multiband_templates',
+    'average_multiband_templates',
+    'TemplateFitter',
+    'TemplateFitResult',
     '__version__',
 ]
