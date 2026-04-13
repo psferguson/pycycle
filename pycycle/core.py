@@ -176,14 +176,16 @@ class PeriodSearch:
         -------
         PeriodSearchResult
         """
-        print('PeriodSearch: backend = %s' % _BACKEND)
+        if verbose:
+            print('PeriodSearch: backend = %s' % _BACKEND)
         nfilts = len(self.filtnams)
         psi_m = None
         thresh_m = None
         ptest = None
 
         for i, filtnam in enumerate(self.filtnams):
-            print('\nPeriodSearch: filter %s' % filtnam)
+            if verbose:
+                print('\nPeriodSearch: filter %s' % filtnam)
             x, fy, theta, psi, conf = compute_periodogram(
                 self.hjd, self.mag, self.magerr, self.filts,
                 fwant=i, pmin=pmin, dphi=dphi,

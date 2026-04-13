@@ -67,7 +67,8 @@ def compute_periodogram(
     conf : ndarray of float64
         Significance threshold for PSI (sum of two noise realisations).
     """
-    print('periodogram: BEGIN')
+    if verbose:
+        print('periodogram: BEGIN')
 
     # --- build period/frequency grid ---
     t0 = np.min(hjd)
@@ -88,12 +89,11 @@ def compute_periodogram(
         x = x[idx].copy()
     farray = 1.0 / x
     nfreq = len(x)
-
-    print(
-        'periodogram: period range %14.8f – %14.8f days' % (x.min(), x.max())
-    )
-    print('periodogram: %d test periods' % nfreq)
     if verbose:
+        print(
+            'periodogram: period range %14.8f – %14.8f days' % (x.min(), x.max())
+        )
+        print('periodogram: %d test periods' % nfreq)
         print('periodogram: frequencies range %14.8f – %14.8f' %
               (farray.min(), farray.max()))
 
@@ -105,7 +105,8 @@ def compute_periodogram(
     yr = mag[ok]
     yr_err = magerr[ok]
     nok = len(tr)
-    print('periodogram: %d observations for filter %s' % (nok, fwant))
+    if verbose:
+        print('periodogram: %d observations for filter %s' % (nok, fwant))
 
     sss = np.argsort(tr)
     tr = tr[sss]
@@ -115,11 +116,13 @@ def compute_periodogram(
     # --- compute PSI ---
     t0_ = _time.time()
     fy = scargle_fast(tr, yr, omega, nfreq)
-    print('scargle: done  %.3f s' % (_time.time() - t0_))
+    if verbose:
+        print('scargle: done  %.3f s' % (_time.time() - t0_))
 
     t0_ = _time.time()
     theta = ctheta_slave(x, yr, tr)
-    print('ctheta_slave: done  %.3f s' % (_time.time() - t0_))
+    if verbose:
+        print('ctheta: done  %.3f s' % (_time.time() - t0_))
 
     psi = 2.0 * fy / theta
 
@@ -127,7 +130,8 @@ def compute_periodogram(
     conf1 = np.zeros_like(psi)
     conf2 = np.zeros_like(psi)
     for count in range(n_thresh):
-        print('periodogram: threshold run %d / %d' % (count + 1, n_thresh))
+        if verbose:
+            print('periodogram: threshold run %d / %d' % (count + 1, n_thresh))
 
         # noise realisation
         er = yr_err * np.random.normal(0.0, 1.0, nok)
@@ -146,6 +150,6 @@ def compute_periodogram(
         conf2 = np.maximum(conf2, conf2b)
 
     conf = conf1 + conf2
-
-    print('periodogram: END')
+    if verbose:
+        print('periodogram: END')
     return x, fy, theta, psi, conf

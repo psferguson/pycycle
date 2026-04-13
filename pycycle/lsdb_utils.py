@@ -67,6 +67,26 @@ _DES_TO_LSST_C0 = {
     'y': +0.000,   # lower-case alias
 }
 
+# ---------------------------------------------------------------------------
+# Empirical DES → LSST corrections derived from DP1 RRL candidates in M49
+# (26 clean RRab, flag_amp=False, flag_depth=False, mu_r > 18).
+# Residuals measured as mean(data) - mean(DES-template prediction) per band
+# after fitting with the RTN-099 correction above.  The empirical values
+# absorb residual PLR zero-point errors not captured by RTN-099.
+#   g: +0.107 (template 0.11 mag too bright)
+#   r: -0.190 (template 0.19 mag too faint)
+#   i: +0.189 (template 0.19 mag too bright)
+# z/Y not yet calibrated on LSST data; RTN-099 values retained.
+# ---------------------------------------------------------------------------
+_EMP_DES_TO_LSST_C0 = {
+    'g': +0.011 + 0.107,   # RTN-099 + empirical residual = +0.118
+    'r': +0.028 - 0.190,   # RTN-099 + empirical residual = -0.162
+    'i': +0.006 + 0.189,   # RTN-099 + empirical residual = +0.195
+    'z': +0.024,            # not yet calibrated on LSST; RTN-099 retained
+    'Y': +0.000,
+    'y': +0.000,
+}
+
 
 def flux_to_mag(flux, flux_err, zpt: float = 31.4):
     """Convert Rubin nJy fluxes to AB magnitudes.
@@ -98,7 +118,8 @@ def flux_to_mag(flux, flux_err, zpt: float = 31.4):
     return mag, magerr
 
 
-def apply_des_to_lsst_correction(template, mean_colors: dict | None = None) -> None:
+def apply_des_to_lsst_correction(template, method: str = 'rtn099',
+                                  mean_colors: dict | None = None) -> None:
     """Adjust DES rr-template beta coefficients for LSST filter differences.
 
     Modifies ``template.betas[:, 0]`` (the c0 constant term) in-place so
@@ -106,25 +127,38 @@ def apply_des_to_lsst_correction(template, mean_colors: dict | None = None) -> N
     absolute scale.  Has **zero runtime cost** during fitting — the correction
     is baked into the template at load time.
 
-    The offsets are evaluated at the mean RRab color (g-i ≈ 0.3, r-i ≈ 0.1,
-    i-z ≈ 0.1) from the RTN-099 synthetic transformations.  For individual
-    stars the color-dependent residual is ≲5 mmag (< 0.2% distance error).
-
     Parameters
     ----------
     template : RRTemplate
         Template loaded via :func:`~pycycle.templates.load_rr_template`.
         Must have ``template.betas`` array (rr-templates mode).
         No-op for Multiband templates (``template.dust is None``).
+    method : {'rtn099', 'empirical'}
+        Which correction set to apply.
+
+        ``'rtn099'`` (default)
+            Synthetic offsets from RTN-099 evaluated at the mean RRab color
+            (g-i ≈ 0.3, r-i ≈ 0.1, i-z ≈ 0.1).  Color-dependent residual
+            ≲5 mmag per star.  Pass ``mean_colors`` to override the assumed
+            colors.
+
+        ``'empirical'``
+            Empirical residuals measured from 26 clean RRab candidates in the
+            M49 field (LSST DP1 alerts).  Captures PLR zero-point errors not
+            accounted for by RTN-099: g +0.12, r −0.16, i +0.20 mag.
+            z/Y bands fall back to RTN-099 values (not yet calibrated).
+            Use this for visualization and distance estimates with LSST gri.
     mean_colors : dict, optional
-        Override the default mean RRab colors used to evaluate the correction.
-        Keys: ``'g-i'``, ``'r-i'``, ``'i-z'``.  Values in magnitudes.
-        If provided, the full polynomial from RTN-099 is re-evaluated.
+        Override the default mean RRab colors for the RTN-099 polynomial.
+        Keys: ``'g-i'``, ``'r-i'``, ``'i-z'``.  Ignored when
+        ``method='empirical'``.
     """
     if template.dust is None:
         return  # Multiband template — no betas to correct
 
-    if mean_colors is not None:
+    if method == 'empirical':
+        corrections = _EMP_DES_TO_LSST_C0
+    elif mean_colors is not None:
         gi = mean_colors.get('g-i', 0.3)
         ri = mean_colors.get('r-i', 0.1)
         iz = mean_colors.get('i-z', 0.1)
