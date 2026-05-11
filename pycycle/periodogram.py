@@ -36,10 +36,10 @@ def compute_periodogram(
         Magnitudes co-aligned with *hjd*.
     magerr : ndarray of float64, shape (N,)
         Magnitude errors co-aligned with *hjd*.
-    filts : ndarray of float64, shape (N,)
-        Integer filter codes co-aligned with *hjd*.
-    fwant : int
-        Filter code selecting the band to analyse.
+    filts : array-like of str, shape (N,)
+        Filter name (band) per observation, co-aligned with *hjd*.
+    fwant : str
+        Filter name selecting the band to analyse.
     pmin : float
         Minimum period to test [days].
     dphi : float
@@ -100,7 +100,8 @@ def compute_periodogram(
     omega = farray * 2.0 * np.pi  # scargle_fast uses angular frequencies
 
     # --- select observations for this filter (error cut: 0 <= err <= 0.2) ---
-    ok = (filts == float(fwant)) & (magerr <= 0.2) & (magerr >= 0.0)
+    filts = np.asarray(filts)
+    ok = (filts == fwant) & (magerr <= 0.2) & (magerr >= 0.0)
     tr = hjd[ok]
     yr = mag[ok]
     yr_err = magerr[ok]

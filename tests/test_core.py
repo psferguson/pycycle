@@ -10,10 +10,14 @@ import pytest
 from pycycle import PeriodSearch
 
 
+_BAND_NAMES = np.array(['u', 'g', 'r', 'i', 'z'])
+
+
 def _load_b1392():
     """Load the B1392all.tab sample data bundled with the package."""
     data_path = importlib.resources.files('pycycle.data').joinpath('B1392all.tab')
-    hjd, mag, magerr, filts = np.loadtxt(str(data_path), unpack=True)
+    hjd, mag, magerr, filts_idx = np.loadtxt(str(data_path), unpack=True)
+    filts = _BAND_NAMES[filts_idx.astype(int)]
     # apply the standard quality cut used in the original self-test
     ok = (magerr >= 0.0) & (magerr <= 0.2)
     return hjd[ok], mag[ok], magerr[ok], filts[ok]
@@ -22,7 +26,7 @@ def _load_b1392():
 @pytest.fixture(scope='module')
 def b1392_result():
     hjd, mag, magerr, filts = _load_b1392()
-    # Single-filter run (filter 0 = 'u') with n_thresh=0 for speed in CI
+    # Single-filter run on 'u' only, with n_thresh=0 for speed in CI
     ps = PeriodSearch(hjd, mag, magerr, filts, filtnams=['u'])
     return ps.run(pmin=0.2, dphi=0.02, n_thresh=0)
 

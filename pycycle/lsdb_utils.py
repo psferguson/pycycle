@@ -270,7 +270,7 @@ def make_template_fit_fn(template, bands: list[str], **fit_kwargs):
     n_start = fit_kwargs.pop('n_start', 4)
     warm_start = fit_kwargs.pop('warm_start', False)
 
-    band_map = {b: i for i, b in enumerate(bands)}
+    bands_set = set(bands)
 
     def _fit_partition(df):
         fitter = TemplateFitter(template, n_newton=n_newton, n_start=n_start,
@@ -281,16 +281,17 @@ def make_template_fit_fn(template, bands: list[str], **fit_kwargs):
             # support both 'midpointMjdTai' (DP1) and 'mjd' column names
             time_col = 'midpointMjdTai' if 'midpointMjdTai' in lc.columns else 'mjd'
             mag, magerr = flux_to_mag(lc['psfFlux'].values, lc['psfFluxErr'].values)
-            bidx_raw = lc['band'].map(band_map)
-            valid = (magerr > 0) & (magerr <= 0.2) & bidx_raw.notna()
+            band_arr = lc['band'].values
+            in_band = np.array([b in bands_set for b in band_arr])
+            valid = (magerr > 0) & (magerr <= 0.2) & in_band
             if valid.sum() < 10:
                 continue
             t = lc[time_col].values[valid]
             m = mag[valid]
             me = magerr[valid]
-            bi = bidx_raw[valid].astype(int).values
+            b = band_arr[valid]
             try:
-                res = fitter.fit(t, m, me, bi, bands, **fit_kwargs)
+                res = fitter.fit(t, m, me, b, **fit_kwargs)
             except Exception:
                 continue
             row = {'id': obj.name,

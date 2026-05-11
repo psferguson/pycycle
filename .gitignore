@@ -13,3 +13,6 @@ __pycache__/
 .claude/
 .ipynb_checkpoints/
 pycycle/_ext/*
+template_diversity/*.png
+interesting_alerts/*.csv
+interesting_alerts/*.pkl

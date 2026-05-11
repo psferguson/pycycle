@@ -23,10 +23,10 @@ def plot_observations(hjd, mag, filts, filtnams, tag=None, plotfile=None, xlim=N
         Heliocentric Julian Dates.
     mag : ndarray of float64, shape (N,)
         Magnitudes co-aligned with *hjd*.
-    filts : ndarray, shape (N,)
-        Integer filter codes co-aligned with *hjd*.
+    filts : array-like of str, shape (N,)
+        Filter name (band) per observation, co-aligned with *hjd*.
     filtnams : list of str
-        Filter names; index corresponds to filter code.
+        Bands to plot, one panel each, in the desired display order.
     tag : str, optional
         Text label added to the bottom-right of the figure.
     plotfile : str, optional
@@ -34,6 +34,7 @@ def plot_observations(hjd, mag, filts, filtnams, tag=None, plotfile=None, xlim=N
     xlim : tuple, optional
         Custom x-axis limits ``(xmin, xmax)``.
     """
+    filts = np.asarray(filts)
     nfilts = len(filtnams)
     hjd0 = int(np.min(hjd))
     x = hjd - hjd0
@@ -46,7 +47,7 @@ def plot_observations(hjd, mag, filts, filtnams, tag=None, plotfile=None, xlim=N
     if nfilts > 1:
         fig, axarr = plt.subplots(nfilts, sharex=True, figsize=(8.5, 11))
         for i in range(nfilts):
-            ok = (filts == float(i))
+            ok = (filts == filtnams[i])
             xx, yy = x[ok], mag[ok]
             axarr[i].scatter(xx, yy, color=_BLUE, alpha=0.5)
             axarr[i].set_xlim(xlim)
@@ -58,7 +59,7 @@ def plot_observations(hjd, mag, filts, filtnams, tag=None, plotfile=None, xlim=N
                 axarr[i].set_xlabel(xlabel, size='x-large')
     else:
         fig, ax = plt.subplots(figsize=(8.5, 11))
-        ok = (filts == float(0))
+        ok = (filts == filtnams[0])
         xx, yy = x[ok], mag[ok]
         ax.scatter(xx, yy, color=_BLUE, alpha=0.5)
         ax.set_xlim(xlim)
@@ -172,10 +173,10 @@ def plot_phased(hjd, mag, magerr, filts, filtnams, period,
         Magnitudes.
     magerr : ndarray of float64, shape (N,)
         Magnitude errors.
-    filts : ndarray, shape (N,)
-        Integer filter codes.
+    filts : array-like of str, shape (N,)
+        Filter name (band) per observation.
     filtnams : list of str
-        Filter names.
+        Bands to plot, one panel each, in the desired display order.
     period : float
         Folding period [days].
     tag : str, optional
@@ -183,6 +184,7 @@ def plot_phased(hjd, mag, magerr, filts, filtnams, period,
     plotfile : str, optional
         Output file path.
     """
+    filts = np.asarray(filts)
     nfilts = len(filtnams)
     hjd0 = int(np.min(hjd))
     x = hjd - hjd0
@@ -194,7 +196,7 @@ def plot_phased(hjd, mag, magerr, filts, filtnams, period,
     if nfilts > 1:
         fig, axarr = plt.subplots(nfilts, sharex=True, figsize=(8.5, 11))
         for i in range(nfilts):
-            ok = (filts == float(i))
+            ok = (filts == filtnams[i])
             xx, yy, ee = x[ok], mag[ok], magerr[ok]
             phi = (xx / period) % 1.0
             axarr[i].errorbar(phi,     yy, yerr=ee, fmt='o',
@@ -210,7 +212,7 @@ def plot_phased(hjd, mag, magerr, filts, filtnams, period,
                 axarr[i].set_xlabel(xlabel, size=20)
     else:
         fig, ax = plt.subplots(figsize=(8.5, 11))
-        ok = (filts == float(0))
+        ok = (filts == filtnams[0])
         xx, yy, ee = x[ok], mag[ok], magerr[ok]
         phi = (xx / period) % 1.0
         ax.errorbar(phi,     yy, yerr=ee, fmt='o', color=_BLUE, alpha=0.5)

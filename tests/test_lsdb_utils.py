@@ -142,14 +142,17 @@ class TestApplyDesToLsstCorrection:
         mag_clean = 14.0 + 0.05 * tmpl.dust[bidx] + 0.5 * g
         magerr = 0.01 * np.ones(n)
 
+        bands_arr = np.array(tmpl.bands)
+        filts = bands_arr[bidx]
+
         fitter_before = TemplateFitter(tmpl, n_newton=5, n_start=4)
-        res_before = fitter_before.fit(t, mag_clean, magerr, bidx, ['g', 'r'],
+        res_before = fitter_before.fit(t, mag_clean, magerr, filts,
                                         pmin=0.44, dphi=0.02, pmax=0.89)
 
         # Apply correction and refit
         apply_des_to_lsst_correction(tmpl)
         fitter_after = TemplateFitter(tmpl, n_newton=5, n_start=4)
-        res_after = fitter_after.fit(t, mag_clean, magerr, bidx, ['g', 'r'],
+        res_after = fitter_after.fit(t, mag_clean, magerr, filts,
                                       pmin=0.44, dphi=0.02, pmax=0.89)
 
         assert abs(res_before.best_period - res_after.best_period) < 0.001, (

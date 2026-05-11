@@ -218,26 +218,33 @@ class TemplateFitResult:
     def best_freq(self):
         return 1.0 / self.best_period
 
-    def predict(self, hjd, filts, filtnams):
+    def predict(self, hjd, filts):
         """Predict magnitudes at given times and bands.
 
         Parameters
         ----------
         hjd : array-like
-        filts : array-like of int  (filter codes, matched to filtnams)
-        filtnams : list of str
+        filts : array-like of str
+            Filter name (band) per observation.  Each must exist in
+            ``self.template.bands``; raises ValueError otherwise.
 
         Returns
         -------
         mag_pred : ndarray
         """
         hjd = np.asarray(hjd)
-        filts = np.asarray(filts, dtype=int)
+        filts = np.asarray(filts).astype(str)
         freq = self.best_freq
         phi = self.best_phi
         template = self.template
 
-        bidx = np.array([template.band_index(filtnams[int(f)]) for f in filts])
+        missing = set(filts.tolist()) - set(template.bands)
+        if missing:
+            raise ValueError(
+                f"Filters {sorted(missing)} not in template bands "
+                f"{template.bands}; template = {template.name!r}"
+            )
+        bidx = np.array([template.band_index(f) for f in filts])
         ph = (freq * hjd + phi) % 1.0
         g = _interp_template(template.gamma, bidx, ph)
 
@@ -297,7 +304,7 @@ class TemplateFitResult:
         ph_dense = np.linspace(0.0, 1.0, 400, endpoint=False)
 
         for i, (fname, ax_) in enumerate(zip(self.filtnams, axes)):
-            mask = self._filts == float(i)
+            mask = self._filts == fname
             if not mask.any():
                 continue
             ph_obs = (freq * self._hjd[mask] + phi) % 1.0
@@ -380,7 +387,7 @@ class TemplateFitter:
         self.warm_start = warm_start
         self._backend = 'C/Cython' if _USE_C else 'pure Python'
 
-    def fit(self, hjd, mag, magerr, filts, filtnams,
+    def fit(self, hjd, mag, magerr, filts,
             pmin: float = 0.2, dphi: float = 0.02,
             pmax: float = None, periods=None) -> TemplateFitResult:
         """Run the template fit over a period grid.
@@ -390,9 +397,9 @@ class TemplateFitter:
         hjd : array-like, shape (N,)
         mag : array-like, shape (N,)
         magerr : array-like, shape (N,)
-        filts : array-like of int, shape (N,)
-            Integer filter codes matched to *filtnams*.
-        filtnams : list of str
+        filts : array-like of str, shape (N,)
+            Filter name (band) per observation.  Each unique band must exist
+            in ``self.template.bands``; raises ValueError otherwise.
         pmin : float
             Minimum period [days].
         dphi : float
@@ -408,15 +415,25 @@ class TemplateFitter:
         hjd = np.ascontiguousarray(hjd, dtype=np.float64)
         mag = np.ascontiguousarray(mag, dtype=np.float64)
         magerr = np.ascontiguousarray(magerr, dtype=np.float64)
-        filts = np.asarray(filts, dtype=int)
+        filts = np.asarray(filts).astype(str)
 
         template = self.template
 
-        # map filter codes → template band indices
-        bidx = np.empty(len(hjd), dtype=np.int64)
-        for obs_i, fcode in enumerate(filts):
-            fname = filtnams[int(fcode)]
-            bidx[obs_i] = template.band_index(fname)
+        # validate filters against template bands
+        unique_filts = set(filts.tolist())
+        missing = unique_filts - set(template.bands)
+        if missing:
+            raise ValueError(
+                f"Filters {sorted(missing)} not in template bands "
+                f"{template.bands}; template = {template.name!r}"
+            )
+
+        # map filter names → template band indices
+        band_to_idx = {b: i for i, b in enumerate(template.bands)}
+        bidx = np.array([band_to_idx[f] for f in filts], dtype=np.int64)
+
+        # filtnams for the result (bands present in data, in template order)
+        filtnams = [b for b in template.bands if b in unique_filts]
 
         # weights
         if self.use_errors:

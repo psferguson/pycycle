@@ -71,9 +71,13 @@ def _synthetic_rr_lightcurve(
     return tmpl, t, m, me, bi
 
 
+_BAND_NAMES = np.array(['u', 'g', 'r', 'i', 'z'])
+
+
 def _load_b1392():
     data_path = importlib.resources.files('pycycle.data').joinpath('B1392all.tab')
-    hjd, mag, magerr, filts = np.loadtxt(str(data_path), unpack=True)
+    hjd, mag, magerr, filts_idx = np.loadtxt(str(data_path), unpack=True)
+    filts = _BAND_NAMES[filts_idx.astype(int)]
     ok = (magerr >= 0.0) & (magerr <= 0.2)
     return hjd[ok], mag[ok], magerr[ok], filts[ok]
 
@@ -237,16 +241,27 @@ def test_period_recovery_synthetic():
     true_period = 0.5016
     tmpl, t, m, me, bi = _synthetic_rr_lightcurve(
         true_period=true_period, n_per_band=30, noise=0.005)
-    filtnams = tmpl.bands
-    filts = bi  # already 0-indexed band codes
+    bands_arr = np.array(tmpl.bands)
+    filts = bands_arr[bi]
     fitter = TemplateFitter(tmpl, n_newton=5, n_start=4)
-    result = fitter.fit(t, m, me, filts, filtnams,
+    result = fitter.fit(t, m, me, filts,
                         pmin=0.44, dphi=0.02, pmax=0.89)
     rel_err = abs(result.best_period - true_period) / true_period
     assert rel_err < 0.01, (
         f'Period recovery failed: got {result.best_period:.6f} d, '
         f'expected {true_period:.6f} d (rel err {rel_err:.4f})'
     )
+
+
+def test_fit_rejects_unknown_filter():
+    """fit() should raise ValueError if a filter is not in template.bands."""
+    tmpl, t, m, me, bi = _synthetic_rr_lightcurve(n_per_band=10)
+    bands_arr = np.array(tmpl.bands)
+    filts = bands_arr[bi].astype(object)
+    filts[0] = 'z'  # band not in template (template has only g, r)
+    fitter = TemplateFitter(tmpl, n_newton=2, n_start=2)
+    with pytest.raises(ValueError, match='not in template bands'):
+        fitter.fit(t, m, me, filts, pmin=0.44, dphi=0.05, pmax=0.89)
 
 
 # ---------------------------------------------------------------------------
@@ -270,11 +285,10 @@ def test_warm_start_same_result():
 
     gold = 0.5016247
     hjd, mag, magerr, filts = _load_b1392()
-    filtnams = ['u', 'g', 'r', 'i', 'z']
 
     fitter_cold = TemplateFitter(tmpl, n_newton=5, n_start=4, warm_start=False)
     result_cold = fitter_cold.fit(
-        hjd, mag, magerr, filts.astype(int), filtnams,
+        hjd, mag, magerr, filts,
         pmin=0.44, dphi=0.02, pmax=0.89,
     )
     assert abs(result_cold.best_period - gold) / gold < 0.01, (
@@ -286,7 +300,7 @@ def test_warm_start_same_result():
     # minimum rather than the global one.  Require within 2% of gold.
     fitter_warm = TemplateFitter(tmpl, n_newton=5, warm_start=True)
     result_warm = fitter_warm.fit(
-        hjd, mag, magerr, filts.astype(int), filtnams,
+        hjd, mag, magerr, filts,
         pmin=0.44, dphi=0.02, pmax=0.89,
     )
     assert abs(result_warm.best_period - gold) / gold < 0.02, (
