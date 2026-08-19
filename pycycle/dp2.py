@@ -26,6 +26,11 @@ Defaults target **RRab** stars: the period grid is 0.44-0.89 d
 (:data:`RRAB_PMIN` / :data:`RRAB_PMAX`).  Widen ``DP2Config.pmin`` if you later
 want RRc as well.  Fits use ``griz`` only -- see ``DP2Config.bands``.
 
+The template fit defaults to ``template_mode='multiband'`` (free mean magnitude
+per band).  The full rr-templates physics model biases the recovered period
+toward short values whenever a star's colours do not sit on the assumed RRab
+locus -- see ``DP2Config.template_mode``.
+
 Example
 -------
 Known-object path::
@@ -147,6 +152,26 @@ class DP2Config:
         pre-loaded template is passed to :func:`make_dp2_fit_fn`.
     template_name : str
         Label recorded on the template.
+    template_mode : {'multiband', 'rr'}
+        Which physics the template fit is allowed to assume.
+
+        ``'multiband'`` (default, and the right choice for **period finding**)
+            Fit an independent mean magnitude per band, plus a shared amplitude
+            and phase.  Only the light-curve *shape* constrains the fit.
+
+        ``'rr'``
+            The full rr-templates model: a single distance modulus ``mu``, a
+            reddening ``EBV``, and the period-luminosity term ``beta_b(P)``.
+            This ties the per-band mean magnitudes to a physical RRab locus, so
+            it yields distances -- but it also means a star whose colours do not
+            sit on that locus is penalised, and **the penalty grows with
+            period**, dragging the best-fit period to the short end of the grid.
+
+        Measured on the 17 known DP2 RRL: ``'multiband'`` agrees with
+        :class:`~pycycle.PeriodSearch` within 5% for 11/17 with median
+        chi2/dof 8.1, while ``'rr'`` manages 5/17 at median chi2/dof 94.6 and
+        piles up against ``pmin``.  Use ``'rr'`` to extract ``mu``/``EBV`` at a
+        period you already trust, not to find the period.
     des_correction : {'rtn099', 'empirical', None}
         DES -> LSST photometric correction applied once at template load time
         via :func:`pycycle.lsdb_utils.apply_des_to_lsst_correction`.  ``None``
@@ -218,6 +243,7 @@ class DP2Config:
 
     template_dir: str | None = None
     template_name: str = 'des'
+    template_mode: str = 'multiband'
     des_correction: str | None = 'rtn099'
 
     bands: list = field(default_factory=lambda: ['g', 'r', 'i', 'z'])
@@ -272,6 +298,10 @@ class DP2Config:
         from .templates import load_rr_template
         from .lsdb_utils import apply_des_to_lsst_correction
 
+        if self.template_mode not in ('multiband', 'rr'):
+            raise ValueError(
+                f"template_mode must be 'multiband' or 'rr', "
+                f'got {self.template_mode!r}')
         if not self.template_dir:
             raise ValueError(
                 'DP2Config.template_dir is unset -- either set it or pass an '
@@ -279,6 +309,16 @@ class DP2Config:
             )
         path = os.path.expanduser(self.template_dir)
         template = load_rr_template(path, name=self.template_name)
+
+        if self.template_mode == 'multiband':
+            # Drop the PLR betas and the dust prior, keeping only the shape.
+            # The DES->LSST zero-point correction is meaningless here (it
+            # shifts betas, which no longer exist) and is skipped.
+            from .templates import RRTemplate
+            return RRTemplate(name=f'{template.name}_multiband',
+                              bands=template.bands, phase=template.phase,
+                              gamma=template.gamma, dust=None, betas=None)
+
         if self.des_correction:
             apply_des_to_lsst_correction(template, method=self.des_correction)
         return template

@@ -39,6 +39,26 @@ def _template(bands=('g', 'r', 'i', 'z'), n_phase=100):
                       gamma=gamma, dust=dust, betas=betas)
 
 
+def _write_template_dir(tmp_path):
+    """Write a minimal rr-templates CSV triple so load_rr_template() works."""
+    d = tmp_path / 'template_test'
+    d.mkdir(exist_ok=True)
+    bands = ['g', 'r', 'i', 'z']
+    phase = np.linspace(0.0, 1.0, 100, endpoint=False)
+    with open(d / 'templates.csv', 'w') as fh:
+        for b in bands:
+            vals = ','.join(f'{v:.6f}' for v in np.sin(2 * np.pi * phase))
+            fh.write(f'"{b}",{vals}\n')
+    with open(d / 'betas.csv', 'w') as fh:
+        fh.write('"",' + ','.join(f'"{b}"' for b in bands) + '\n')
+        for key in ('c0', 'p1', 'p2'):
+            fh.write(f'"{key}",' + ','.join('0.0' for _ in bands) + '\n')
+    with open(d / 'dust.csv', 'w') as fh:
+        for b, v in zip(bands, [3.665, 2.464, 1.804, 1.38]):
+            fh.write(f'"{b}",{v}\n')
+    return d
+
+
 def _lc_frame(n_per_band=25, bands=('g', 'r', 'i', 'z'), period=0.55,
               mu=18.0, ebv=0.03, A=0.6, noise=0.01, seed=7,
               magerr_col='psfMagErr_corrected', extra_flags=True):
@@ -106,6 +126,15 @@ class TestConfig:
     def test_object_columns_include_nest(self):
         cfg = DP2Config()
         assert object_columns(cfg)[-1] == cfg.nest_col
+
+    def test_default_template_mode_is_multiband(self):
+        """Period finding must not assume the PLR physics by default."""
+        assert DP2Config().template_mode == 'multiband'
+
+    def test_bad_template_mode_raises(self):
+        cfg = DP2Config(template_dir='/nonexistent', template_mode='nope')
+        with pytest.raises(ValueError, match='template_mode'):
+            cfg.load_template()
 
     def test_load_template_without_dir_raises(self):
         with pytest.raises(ValueError, match='template_dir'):
@@ -294,6 +323,33 @@ class TestFitLightcurve:
         cfg = DP2Config(run_period_search=False)
         row = fit_lightcurve(*clean_epochs(lc, cfg), tmpl, cfg)
         assert 0.0 < row['tf_chi2_dof'] < 10.0
+
+
+class TestTemplateMode:
+    """multiband mode drops the PLR/dust terms that bias the period short."""
+
+    def test_multiband_template_has_no_dust_or_betas(self, tmp_path):
+        cfg = DP2Config(template_dir=str(_write_template_dir(tmp_path)),
+                        template_mode='multiband')
+        t = cfg.load_template()
+        assert t.dust is None and t.betas is None
+        assert t.name.endswith('_multiband')
+
+    def test_rr_mode_keeps_dust_and_betas(self, tmp_path):
+        cfg = DP2Config(template_dir=str(_write_template_dir(tmp_path)),
+                        template_mode='rr', des_correction=None)
+        t = cfg.load_template()
+        assert t.dust is not None and t.betas is not None
+
+    def test_mode_changes_output_columns(self, tmp_path):
+        rr = DP2Config(template_dir=str(_write_template_dir(tmp_path)),
+                       template_mode='rr', des_correction=None).load_template()
+        mb = DP2Config(template_dir=str(_write_template_dir(tmp_path)),
+                       template_mode='multiband').load_template()
+        rr_cols = set(fit_meta(rr, DP2Config()).columns)
+        mb_cols = set(fit_meta(mb, DP2Config()).columns)
+        assert {'mu', 'EBV'} <= rr_cols
+        assert {'mu_g', 'mu_r'} <= mb_cols and 'EBV' not in mb_cols
 
 
 class TestPeriodBoundFlag:
