@@ -218,6 +218,30 @@ signals a period alias), `tf_period_coarse`, `tf_chi2_dof`, `at_period_bound`
 rather than a real measurement), and the `lchi_med`/`sig_max` variability
 statistics.
 
+**Template mode** (`DP2Config.template_mode`, default `'multiband'`): controls
+what physics the fit may assume.
+
+* `'multiband'` — a free mean magnitude per band, plus a shared amplitude and
+  phase. Only light-curve *shape* constrains the fit. **Use this to find
+  periods.**
+* `'rr'` — the full rr-templates model: one distance modulus `mu`, a reddening
+  `EBV`, and the period-luminosity term `beta_b(P)`. This ties the per-band mean
+  magnitudes to a physical RRab locus, so it yields distances — but a star whose
+  colours do not sit on that locus is penalised, and because `beta_b` depends on
+  period **the penalty grows with period**, sloping the RSS curve upward across
+  the whole grid and dragging the best-fit period toward `pmin`.
+
+Measured on the 17 known DP2 RR Lyrae:
+
+| mode | agrees with `PeriodSearch` (<5%) | median chi2/dof | railed at a period bound |
+|---|---|---|---|
+| `'rr'` | 5/17 | 94.6 | 4/17 |
+| `'multiband'` | **11/17** | **8.1** | **0/17** |
+
+Use `'rr'` to extract `mu`/`EBV` at a period you already trust, not to find the
+period. The DES→LSST zero-point correction is skipped in multiband mode, since
+it shifts `betas`, which that mode does not use.
+
 **Period refinement** (`DP2Config.refine`, default `True`): `dphi` bounds the
 phase error between *adjacent* points on the coarse grid across the data
 baseline, so on Rubin's multi-year baselines the coarse grid is too sparse and
