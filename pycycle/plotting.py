@@ -5,6 +5,14 @@ Three plot types are provided:
 * :func:`plot_observations` — raw light curve (HJD vs magnitude).
 * :func:`plot_periodogram` — PSI periodogram vs frequency.
 * :func:`plot_phased` — phased light curve folded at a given period.
+
+Each accepts an optional *axes* argument so the plot can be placed inside a
+figure you already own — a validation grid, say, rather than a standalone
+figure.  Pass a single ``Axes`` to overlay all bands on one panel (bands are
+colour-coded and a legend is drawn), or a sequence of at least ``len(filtnams)``
+axes for the usual one-band-per-panel layout.  With ``axes=None`` the functions
+behave exactly as before: they build their own stacked figure and close it.
+All three return the :class:`matplotlib.figure.Figure` they drew into.
 """
 
 import numpy as np
@@ -13,8 +21,60 @@ import matplotlib.pyplot as plt
 _BLUE = 'dodgerblue'
 _RED = 'salmon'
 
+#: Per-band colours used when several bands share one panel.
+_BAND_COLORS = ['steelblue', 'seagreen', 'tomato', 'goldenrod', 'orchid',
+                'slategrey']
 
-def plot_observations(hjd, mag, filts, filtnams, tag=None, plotfile=None, xlim=None):
+
+def _prepare_axes(axes, nfilts, figsize, sharex=True, npanels=None):
+    """Resolve the *axes* argument into a concrete list of panels.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    panels : list of Axes
+        One entry per band (length ``npanels``).  In overlay mode every entry
+        is the *same* Axes.
+    created : bool
+        True when this call built the figure (and therefore owns it).
+    overlay : bool
+        True when all bands share a single panel.
+    """
+    npanels = nfilts if npanels is None else npanels
+
+    if axes is None:
+        fig, arr = plt.subplots(npanels, sharex=sharex, figsize=figsize,
+                                squeeze=False)
+        return fig, list(arr[:, 0]), True, False
+
+    if isinstance(axes, plt.Axes):
+        return axes.figure, [axes] * npanels, False, True
+
+    panels = list(np.atleast_1d(np.asarray(axes, dtype=object)).ravel())
+    if not panels:
+        raise ValueError('axes sequence is empty')
+    if len(panels) < npanels:
+        # Not enough panels for one band each: overlay rather than silently
+        # dropping the bands that do not fit.
+        return panels[0].figure, [panels[0]] * npanels, False, True
+    return panels[0].figure, panels[:npanels], False, False
+
+
+def _finish(fig, created, overlay, tag, plotfile):
+    """Shared tail: optional tag, optional save, and close only what we own."""
+    if tag is not None:
+        fig.text(0.95, 0.1, tag, ha='right', va='bottom',
+                 color='grey', size='large', rotation=90)
+    if plotfile is not None:
+        fig.savefig(plotfile, dpi=300)
+        print(plotfile, '<--- plotfile written')
+    if created:
+        plt.close(fig)
+    return fig
+
+
+def plot_observations(hjd, mag, filts, filtnams, tag=None, plotfile=None,
+                      xlim=None, axes=None):
     """Plot the raw multi-band light curve (HJD vs magnitude).
 
     Parameters
@@ -33,6 +93,13 @@ def plot_observations(hjd, mag, filts, filtnams, tag=None, plotfile=None, xlim=N
         Path to save the figure (PNG); figure is not saved if ``None``.
     xlim : tuple, optional
         Custom x-axis limits ``(xmin, xmax)``.
+    axes : Axes or sequence of Axes, optional
+        Draw into these instead of creating a figure.  See the module
+        docstring.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
     """
     filts = np.asarray(filts)
     nfilts = len(filtnams)
@@ -44,43 +111,47 @@ def plot_observations(hjd, mag, filts, filtnams, tag=None, plotfile=None, xlim=N
     xlabel = 'HJD - %d [days]' % hjd0
     dy = 0.5
 
-    if nfilts > 1:
-        fig, axarr = plt.subplots(nfilts, sharex=True, figsize=(8.5, 11))
-        for i in range(nfilts):
-            ok = (filts == filtnams[i])
-            xx, yy = x[ok], mag[ok]
-            axarr[i].scatter(xx, yy, color=_BLUE, alpha=0.5)
-            axarr[i].set_xlim(xlim)
-            axarr[i].set_ylim([np.max(yy) + dy, np.min(yy) - dy])
-            axarr[i].set_ylabel('mag', size='x-large')
-            axarr[i].text(0.97, 0.80, filtnams[i], ha='right',
-                          size='x-large', transform=axarr[i].transAxes)
-            if i == nfilts - 1:
-                axarr[i].set_xlabel(xlabel, size='x-large')
-    else:
-        fig, ax = plt.subplots(figsize=(8.5, 11))
-        ok = (filts == filtnams[0])
+    fig, panels, created, overlay = _prepare_axes(axes, nfilts, (8.5, 11))
+
+    ymin, ymax = np.inf, -np.inf
+    for i, fname in enumerate(filtnams):
+        ok = (filts == fname)
+        if not np.any(ok):
+            continue
         xx, yy = x[ok], mag[ok]
-        ax.scatter(xx, yy, color=_BLUE, alpha=0.5)
+        ax = panels[i]
+        color = _BAND_COLORS[i % len(_BAND_COLORS)] if overlay else _BLUE
+        ax.scatter(xx, yy, color=color, alpha=0.5,
+                   label=fname if overlay else None)
+        ymin, ymax = min(ymin, np.min(yy)), max(ymax, np.max(yy))
+        if not overlay:
+            ax.set_xlim(xlim)
+            ax.set_ylim([np.max(yy) + dy, np.min(yy) - dy])
+            ax.set_ylabel('mag', size='x-large')
+            ax.text(0.97, 0.80, fname, ha='right', size='x-large',
+                    transform=ax.transAxes)
+            if i == nfilts - 1:
+                ax.set_xlabel(xlabel, size='x-large')
+
+    if overlay and np.isfinite(ymin):
+        ax = panels[0]
         ax.set_xlim(xlim)
-        ax.set_ylim([np.max(yy) + dy, np.min(yy) - dy])
+        ax.set_ylim([ymax + dy, ymin - dy])
         ax.set_ylabel('mag', size='x-large')
         ax.set_xlabel(xlabel, size='x-large')
-        ax.text(0.97, 0.90, filtnams[0], ha='right',
-                size='x-large', transform=ax.transAxes)
+        ax.legend(loc='best', fontsize='small', ncol=min(nfilts, 3))
 
-    if tag is not None:
-        plt.figtext(0.95, 0.1, tag, ha='right', va='bottom',
-                    color='grey', size='large', rotation=90)
-    if plotfile is not None:
-        plt.savefig(plotfile, dpi=300)
-        print(plotfile, '<--- plotfile written')
-    plt.close()
+    return _finish(fig, created, overlay, tag, plotfile)
 
 
 def plot_periodogram(freq, psi_m, thresh_m, filtnams, tag=None,
-                     plotfile=None, ylim=None, verbose=False):
+                     plotfile=None, ylim=None, verbose=False, axes=None):
     """Plot the hybrid PSI periodogram vs frequency.
+
+    With ``axes=None`` a figure of ``len(filtnams) + 1`` panels is built: one
+    per band plus a combined "ALL" panel.  When a single Axes is supplied only
+    the band-summed periodogram is drawn into it, since that is the quantity
+    ``PeriodSearchResult.best_period`` is taken from.
 
     Parameters
     ----------
@@ -101,43 +172,73 @@ def plot_periodogram(freq, psi_m, thresh_m, filtnams, tag=None,
         Custom y-axis limits.
     verbose : bool, optional
         Print peak frequency/period for each filter.
+    axes : Axes or sequence of Axes, optional
+        Draw into these instead of creating a figure.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
     """
     nfilts = len(filtnams)
     periods = 1.0 / freq
+    multi = np.asarray(psi_m).ndim > 1
 
-    if nfilts > 1:
-        fig, axarr = plt.subplots(nfilts + 1, sharex=True, figsize=(8.5, 11))
+    def _report(label, psi):
+        idx = np.argmax(psi)
+        print('%8s : %12.2f %11.6f %12.7f' %
+              (label, psi[idx], freq[idx], periods[idx]))
+
+    fig, panels, created, overlay = _prepare_axes(
+        axes, nfilts, (8.5, 11), npanels=(nfilts + 1) if multi else 1)
+
+    if overlay:
+        # single panel: show the combined periodogram, which is what the
+        # reported best period comes from
+        psi_all = psi_m.sum(0) if multi else psi_m
+        thresh_all = thresh_m.sum(0) if multi else thresh_m
+        ax = panels[0]
+        ax.plot(freq, psi_all, color=_BLUE, zorder=0)
+        if np.any(thresh_all):
+            ax.plot(freq, thresh_all, color=_RED, zorder=10)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        ax.set_ylabel(r'${\Psi}$', size=19)
+        ax.set_xlabel(r'Frequency [days$^{-1}$]', size='x-large')
+        ax.text(0.985, 0.90, 'ALL' if multi else filtnams[0], ha='right',
+                size='x-large', transform=ax.transAxes)
+        if verbose:
+            _report('ALL' if multi else filtnams[0], psi_all)
+        return _finish(fig, created, overlay, tag, plotfile)
+
+    if multi:
         for i in range(nfilts):
-            axarr[i].plot(freq, psi_m[i], color=_BLUE, zorder=0)
+            ax = panels[i]
+            ax.plot(freq, psi_m[i], color=_BLUE, zorder=0)
             if np.any(thresh_m[i]):
-                axarr[i].plot(freq, thresh_m[i], color=_RED, zorder=10)
+                ax.plot(freq, thresh_m[i], color=_RED, zorder=10)
             if ylim is not None:
-                axarr[i].set_ylim(ylim)
-            axarr[i].set_ylabel(r'${\Psi}$', size=19)
-            axarr[i].text(0.97, 0.80, filtnams[i], ha='right',
-                          size='x-large', transform=axarr[i].transAxes)
+                ax.set_ylim(ylim)
+            ax.set_ylabel(r'${\Psi}$', size=19)
+            ax.text(0.97, 0.80, filtnams[i], ha='right', size='x-large',
+                    transform=ax.transAxes)
             if verbose:
-                idx = np.argmax(psi_m[i])
-                print('%8s : %12.2f %11.6f %12.7f' %
-                      (filtnams[i], psi_m[i][idx], freq[idx], periods[idx]))
-        j = nfilts
+                _report(filtnams[i], psi_m[i])
+        ax = panels[nfilts]
         psi_all = psi_m.sum(0)
         thresh_all = thresh_m.sum(0)
-        axarr[j].plot(freq, psi_all, color=_BLUE, zorder=0)
+        ax.plot(freq, psi_all, color=_BLUE, zorder=0)
         if np.any(thresh_all):
-            axarr[j].plot(freq, thresh_all, color=_RED, zorder=10)
+            ax.plot(freq, thresh_all, color=_RED, zorder=10)
         if ylim is not None:
-            axarr[j].set_ylim(ylim)
-        axarr[j].set_ylabel(r'${\Psi}$', size=19)
-        axarr[j].set_xlabel(r'Frequency [days$^{-1}$]', size='x-large')
-        axarr[j].text(0.985, 0.80, 'ALL', ha='right',
-                      size='x-large', transform=axarr[j].transAxes)
+            ax.set_ylim(ylim)
+        ax.set_ylabel(r'${\Psi}$', size=19)
+        ax.set_xlabel(r'Frequency [days$^{-1}$]', size='x-large')
+        ax.text(0.985, 0.80, 'ALL', ha='right', size='x-large',
+                transform=ax.transAxes)
         if verbose:
-            idx = np.argmax(psi_all)
-            print('%8s : %12.2f %11.6f %12.7f' %
-                  ('ALL', psi_all[idx], freq[idx], periods[idx]))
+            _report('ALL', psi_all)
     else:
-        fig, ax = plt.subplots(figsize=(8.5, 11))
+        ax = panels[0]
         ax.plot(freq, psi_m, color=_BLUE, zorder=0)
         if np.any(thresh_m):
             ax.plot(freq, thresh_m, color=_RED, zorder=10)
@@ -145,24 +246,16 @@ def plot_periodogram(freq, psi_m, thresh_m, filtnams, tag=None,
             ax.set_ylim(ylim)
         ax.set_ylabel(r'${\Psi}$', size=19)
         ax.set_xlabel(r'Frequency [days$^{-1}$]', size='x-large')
-        ax.text(0.97, 0.90, filtnams[0], ha='right',
-                size='x-large', transform=ax.transAxes)
+        ax.text(0.97, 0.90, filtnams[0], ha='right', size='x-large',
+                transform=ax.transAxes)
         if verbose:
-            idx = np.argmax(psi_m)
-            print('%8s : %12.2f %11.6f %12.7f' %
-                  (filtnams[0], psi_m[idx], freq[idx], periods[idx]))
+            _report(filtnams[0], psi_m)
 
-    if tag is not None:
-        plt.figtext(0.95, 0.1, tag, ha='right', va='bottom',
-                    color='grey', size='large', rotation=90)
-    if plotfile is not None:
-        plt.savefig(plotfile, dpi=300)
-        print(plotfile, '<--- plotfile written')
-    plt.close()
+    return _finish(fig, created, overlay, tag, plotfile)
 
 
 def plot_phased(hjd, mag, magerr, filts, filtnams, period,
-                tag=None, plotfile=None):
+                tag=None, plotfile=None, axes=None):
     """Plot the phased light curve folded at *period*.
 
     Parameters
@@ -183,6 +276,13 @@ def plot_phased(hjd, mag, magerr, filts, filtnams, period,
         Figure label.
     plotfile : str, optional
         Output file path.
+    axes : Axes or sequence of Axes, optional
+        Draw into these instead of creating a figure.  A single Axes overlays
+        all bands.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
     """
     filts = np.asarray(filts)
     nfilts = len(filtnams)
@@ -193,43 +293,41 @@ def plot_phased(hjd, mag, magerr, filts, filtnams, period,
     xlabel = r'${\phi}$'
     dy = 0.5
 
-    if nfilts > 1:
-        fig, axarr = plt.subplots(nfilts, sharex=True, figsize=(8.5, 11))
-        for i in range(nfilts):
-            ok = (filts == filtnams[i])
-            xx, yy, ee = x[ok], mag[ok], magerr[ok]
-            phi = (xx / period) % 1.0
-            axarr[i].errorbar(phi,     yy, yerr=ee, fmt='o',
-                              color=_BLUE, alpha=0.5)
-            axarr[i].errorbar(phi + 1, yy, yerr=ee, fmt='o',
-                              color=_BLUE, alpha=0.5)
-            axarr[i].set_xlim(xlim)
-            axarr[i].set_ylim([np.max(yy + ee) + dy, np.min(yy - ee) - dy])
-            axarr[i].set_ylabel('mag', size='x-large')
-            axarr[i].text(0.97, 0.80, filtnams[i], ha='right',
-                          size='x-large', transform=axarr[i].transAxes)
-            if i == nfilts - 1:
-                axarr[i].set_xlabel(xlabel, size=20)
-    else:
-        fig, ax = plt.subplots(figsize=(8.5, 11))
-        ok = (filts == filtnams[0])
+    fig, panels, created, overlay = _prepare_axes(axes, nfilts, (8.5, 11))
+
+    ymin, ymax = np.inf, -np.inf
+    for i, fname in enumerate(filtnams):
+        ok = (filts == fname)
+        if not np.any(ok):
+            continue
         xx, yy, ee = x[ok], mag[ok], magerr[ok]
         phi = (xx / period) % 1.0
-        ax.errorbar(phi,     yy, yerr=ee, fmt='o', color=_BLUE, alpha=0.5)
-        ax.errorbar(phi + 1, yy, yerr=ee, fmt='o', color=_BLUE, alpha=0.5)
+        ax = panels[i]
+        color = _BAND_COLORS[i % len(_BAND_COLORS)] if overlay else _BLUE
+        ax.errorbar(phi, yy, yerr=ee, fmt='o', color=color, alpha=0.5,
+                    label=fname if overlay else None)
+        ax.errorbar(phi + 1, yy, yerr=ee, fmt='o', color=color, alpha=0.5)
+        ymin = min(ymin, np.min(yy - ee))
+        ymax = max(ymax, np.max(yy + ee))
+        if not overlay:
+            ax.set_xlim(xlim)
+            ax.set_ylim([np.max(yy + ee) + dy, np.min(yy - ee) - dy])
+            ax.set_ylabel('mag', size='x-large')
+            ax.text(0.97, 0.80, fname, ha='right', size='x-large',
+                    transform=ax.transAxes)
+            if i == nfilts - 1:
+                ax.set_xlabel(xlabel, size=20)
+
+    if overlay and np.isfinite(ymin):
+        ax = panels[0]
         ax.set_xlim(xlim)
-        ax.set_ylim([np.max(yy + ee) + dy, np.min(yy - ee) - dy])
+        ax.set_ylim([ymax + dy, ymin - dy])
         ax.set_ylabel('mag', size='x-large')
         ax.set_xlabel(xlabel, size=20)
-        ax.text(0.97, 0.90, filtnams[0], ha='right',
-                size='x-large', transform=ax.transAxes)
+        ax.set_title('Period: %9.6f days' % period)
+        ax.legend(loc='best', fontsize='small', ncol=min(nfilts, 3))
+    else:
+        fig.text(0.5, 0.93, 'Period: %9.6f days' % period,
+                 ha='center', color='black', size='xx-large')
 
-    plt.figtext(0.5, 0.93, 'Period: %9.6f days' % period,
-                ha='center', color='black', size='xx-large')
-    if tag is not None:
-        plt.figtext(0.95, 0.1, tag, ha='right', va='bottom',
-                    color='grey', size='large', rotation=90)
-    if plotfile is not None:
-        plt.savefig(plotfile, dpi=300)
-        print(plotfile, '<--- plotfile written')
-    plt.close()
+    return _finish(fig, created, overlay, tag, plotfile)

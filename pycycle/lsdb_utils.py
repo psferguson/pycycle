@@ -1,5 +1,18 @@
 """Utilities for running pycycle on LSST/Rubin catalogs via LSDB.
 
+.. note::
+   This module targets the **DP1** pattern, where a separate forced-source
+   catalog is joined onto the objects with ``objects.nest_sources(sources,
+   source_id_col='objectId')``, producing a nested column called ``sources``,
+   and magnitudes are derived from ``psfFlux``.
+
+   For **DP2** and later -- where the object collection already carries the
+   light curve in an ``objectForcedSource`` nested column with native
+   ``psfMag``/``psfMagErr_corrected`` -- use :mod:`pycycle.dp2`, which also
+   runs :class:`~pycycle.PeriodSearch` alongside the template fit, emits a row
+   for every object rather than dropping failures, and provides both an
+   ``objectId``-index path and a full-catalog ``map_partitions`` path.
+
 Provides helpers for:
 - Flux → magnitude conversion (Rubin AB system)
 - DES → LSST/Rubin filter corrections (RTN-099)
@@ -156,6 +169,16 @@ def apply_des_to_lsst_correction(template, method: str = 'rtn099',
     if template.dust is None:
         return  # Multiband template — no betas to correct
 
+    # The correction mutates betas in place, so applying it twice would double
+    # the offset.  Record it on the template and refuse to re-apply.
+    applied = getattr(template, 'lsst_correction', None)
+    if applied is not None:
+        raise ValueError(
+            f'DES→LSST correction {applied!r} has already been applied to '
+            f'template {template.name!r}; applying {method!r} on top would '
+            'double-count the offset.  Reload the template to change methods.'
+        )
+
     if method == 'empirical':
         corrections = _EMP_DES_TO_LSST_C0
     elif mean_colors is not None:
@@ -175,6 +198,8 @@ def apply_des_to_lsst_correction(template, method: str = 'rtn099',
 
     for bi, band in enumerate(template.bands):
         template.betas[bi, 0] += corrections.get(band, 0.0)
+
+    template.lsst_correction = method
 
 
 def compute_variability_features(lc_df, bands: list[str]) -> dict:
@@ -223,14 +248,19 @@ def compute_variability_features(lc_df, bands: list[str]) -> dict:
     }
 
 
-def make_template_fit_fn(template, bands: list[str], **fit_kwargs):
+def make_template_fit_fn(template, bands: list[str], nest_col: str = 'sources',
+                          **fit_kwargs):
     """Return a ``map_partitions``-compatible function and its Dask meta DataFrame.
 
     The returned function processes one LSDB partition (a pandas DataFrame with
     a nested ``sources`` column) and returns a DataFrame with one row per object.
 
-    Each object's ``sources`` column must be a DataFrame with columns:
+    Each object's nested column must be a DataFrame with columns:
     ``midpointMjdTai`` (or ``mjd``), ``band``, ``psfFlux``, ``psfFluxErr``.
+
+    Objects whose fit fails, or which have fewer than 10 usable epochs, are
+    **omitted** from the output.  If you need one row per input object, use
+    :func:`pycycle.dp2.make_dp2_fit_fn` instead.
 
     Parameters
     ----------
@@ -238,7 +268,11 @@ def make_template_fit_fn(template, bands: list[str], **fit_kwargs):
         Pre-loaded template (apply :func:`apply_des_to_lsst_correction` beforehand
         if needed).
     bands : list of str
-        Band names matching the template (e.g. ``['g','r','i','z','y']``).
+        Band names matching the template (e.g. ``['g','r','i','z']``).
+    nest_col : str
+        Name of the nested light-curve column.  ``'sources'`` for the DP1
+        ``nest_sources`` join; ``'objectForcedSource'`` for a Rubin object
+        collection (but prefer :mod:`pycycle.dp2` for that case).
     **fit_kwargs
         Passed to :meth:`~pycycle.template_fit.TemplateFitter.fit`
         (e.g. ``pmin=0.44``, ``dphi=0.02``, ``pmax=0.89``,
@@ -262,6 +296,11 @@ def make_template_fit_fn(template, bands: list[str], **fit_kwargs):
             warm_start=True,
         )
         results = joined.map_partitions(fn, meta=meta).compute()
+
+    See Also
+    --------
+    pycycle.dp2.make_dp2_fit_fn : DP2 equivalent; native psfMag, per-object
+        rows including failures, and an optional PeriodSearch alongside.
     """
     import pandas as pd
     from pycycle.template_fit import TemplateFitter
@@ -277,7 +316,7 @@ def make_template_fit_fn(template, bands: list[str], **fit_kwargs):
                                 warm_start=warm_start)
         rows = []
         for _, obj in df.iterrows():
-            lc = obj['sources']
+            lc = obj[nest_col]
             # support both 'midpointMjdTai' (DP1) and 'mjd' column names
             time_col = 'midpointMjdTai' if 'midpointMjdTai' in lc.columns else 'mjd'
             mag, magerr = flux_to_mag(lc['psfFlux'].values, lc['psfFluxErr'].values)

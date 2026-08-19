@@ -296,12 +296,17 @@ class TemplateFitResult:
             n = len(set(self.filtnams))
             fig, axes = plt.subplots(n, 1, sharex=True,
                                      figsize=(8, 2.5 * n), squeeze=False)
-            axes = axes[:, 0]
+            axes = list(axes[:, 0])
+            created, overlay = True, False
         else:
-            axes = [ax]
+            # A single Axes means "put it all here" -- repeat it so every band
+            # is drawn, rather than silently plotting only the first.
+            axes = [ax] * len(self.filtnams)
+            created, overlay = False, True
 
         colors = ['steelblue', 'seagreen', 'tomato', 'goldenrod', 'orchid']
         ph_dense = np.linspace(0.0, 1.0, 400, endpoint=False)
+        inverted = set()
 
         for i, (fname, ax_) in enumerate(zip(self.filtnams, axes)):
             mask = self._filts == fname
@@ -320,7 +325,7 @@ class TemplateFitResult:
             try:
                 bi = template.band_index(fname)
             except ValueError:
-                ax_.legend(); continue
+                ax_.legend(fontsize='small'); continue
 
             g_dense = _interp_template(template.gamma,
                                        np.full(400, bi, dtype=int), ph_dense)
@@ -338,17 +343,24 @@ class TemplateFitResult:
                 A = self.best_coeffs['A']
                 m_pred = mu_b + A * g_dense
 
-            ax_.plot(ph_dense, m_pred, color='k', lw=1.2, zorder=5)
-            ax_.plot(ph_dense + 1, m_pred, color='k', lw=1.2, zorder=5)
-            ax_.invert_yaxis()
+            line_c = 'k' if not overlay else c
+            ax_.plot(ph_dense, m_pred, color=line_c, lw=1.2, zorder=5)
+            ax_.plot(ph_dense + 1, m_pred, color=line_c, lw=1.2, zorder=5)
+            # invert once per axis, not once per band
+            if id(ax_) not in inverted:
+                ax_.invert_yaxis()
+                inverted.add(id(ax_))
             ax_.set_xlim(-0.05, 2.05)
             ax_.set_ylabel('mag')
-            ax_.legend(loc='upper right')
+            ax_.legend(loc='upper right', fontsize='small')
 
         axes[-1].set_xlabel(r'Phase $\phi$')
-        plt.suptitle(f'P = {period:.6f} d  |  template: {template.name}',
-                     y=1.01)
-        plt.tight_layout()
+        title = f'P = {period:.6f} d  |  template: {template.name}'
+        if created:
+            fig.suptitle(title, y=1.01)
+            fig.tight_layout()
+        else:
+            axes[0].set_title(title, fontsize='medium')
         return axes
 
 
@@ -389,7 +401,8 @@ class TemplateFitter:
 
     def fit(self, hjd, mag, magerr, filts,
             pmin: float = 0.2, dphi: float = 0.02,
-            pmax: float = None, periods=None) -> TemplateFitResult:
+            pmax: float = None, periods=None,
+            verbose: bool = True) -> TemplateFitResult:
         """Run the template fit over a period grid.
 
         Parameters
@@ -407,6 +420,10 @@ class TemplateFitter:
         pmax : float, optional
         periods : array-like, optional
             Explicit period grid; overrides auto-generation.
+        verbose : bool
+            Print backend/template/grid-size diagnostics.  Set False for
+            catalogue-scale runs, where one fit per object would otherwise
+            emit three lines per star into the worker logs.
 
         Returns
         -------
@@ -448,11 +465,12 @@ class TemplateFitter:
             ptest = np.ascontiguousarray(periods, dtype=np.float64)
         else:
             ptest = _make_period_grid(hjd, pmin, dphi, pmax)
-        print(f'TemplateFitter: backend = {self._backend}')
-        print(f'TemplateFitter: template = {template.name}')
-        start_desc = 'warm' if self.warm_start else f'{self.n_start} starts'
-        print(f'TemplateFitter: {len(ptest)} test periods, '
-              f'{self.n_newton} Newton iters × {start_desc}')
+        if verbose:
+            start_desc = 'warm' if self.warm_start else f'{self.n_start} starts'
+            print(f'TemplateFitter: backend = {self._backend}')
+            print(f'TemplateFitter: template = {template.name}')
+            print(f'TemplateFitter: {len(ptest)} test periods, '
+                  f'{self.n_newton} Newton iters × {start_desc}')
 
         gamma = np.ascontiguousarray(template.gamma, dtype=np.float64)
         dg = np.ascontiguousarray(template.dgamma(), dtype=np.float64)
