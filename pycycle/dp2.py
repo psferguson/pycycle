@@ -172,6 +172,27 @@ class DP2Config:
         chi2/dof 8.1, while ``'rr'`` manages 5/17 at median chi2/dof 94.6 and
         piles up against ``pmin``.  Use ``'rr'`` to extract ``mu``/``EBV`` at a
         period you already trust, not to find the period.
+    template_source : {'auto', 'rr', 'baeza'}
+        Which template *library* ``template_dir`` points at.
+
+        ``'rr'``
+            Long / Stringer+2019 rr-templates: a directory containing
+            ``templates.csv`` / ``betas.csv`` / ``dust.csv``.
+        ``'baeza'``
+            Baeza-Villagra+2025 Multiband-templates: a directory of per-star
+            ``.txt`` files (or an unpacked ``RRab_normalized.zip``).  These are
+            normalised shapes with no dust or PLR terms, so they are inherently
+            multiband-mode and ``template_mode``/``des_correction`` do not apply.
+        ``'auto'`` (default)
+            Detect from the directory contents via
+            :func:`pycycle.templates.is_multiband_dir`.
+    baeza_combine : {'average', 'first'} or int
+        How to reduce the 136 per-star Baeza-Villagra templates to something
+        fittable.  ``'average'`` (default) builds the mean shape;
+        ``'first'`` takes one template; an integer *k* selects *k* medoid
+        templates by clustering and returns the first -- see
+        :func:`pycycle.templates.load_medoid_templates` if you want to fit all
+        *k* and keep the best.
     des_correction : {'rtn099', 'empirical', None}
         DES -> LSST photometric correction applied once at template load time
         via :func:`pycycle.lsdb_utils.apply_des_to_lsst_correction`.  ``None``
@@ -244,6 +265,8 @@ class DP2Config:
     template_dir: str | None = None
     template_name: str = 'des'
     template_mode: str = 'multiband'
+    template_source: str = 'auto'
+    baeza_combine: str = 'average'
     des_correction: str | None = 'rtn099'
 
     bands: list = field(default_factory=lambda: ['g', 'r', 'i', 'z'])
@@ -295,7 +318,8 @@ class DP2Config:
         ValueError
             If ``template_dir`` is unset.
         """
-        from .templates import load_rr_template
+        from .templates import (load_rr_template, load_multiband_dir,
+                                is_multiband_dir, average_multiband_templates)
         from .lsdb_utils import apply_des_to_lsst_correction
 
         if self.template_mode not in ('multiband', 'rr'):
@@ -308,6 +332,31 @@ class DP2Config:
                 'already-loaded template to make_dp2_fit_fn(template=...).'
             )
         path = os.path.expanduser(self.template_dir)
+
+        source = self.template_source
+        if source == 'auto':
+            source = 'baeza' if is_multiband_dir(path) else 'rr'
+        if source not in ('rr', 'baeza'):
+            raise ValueError(
+                f"template_source must be 'auto', 'rr' or 'baeza', got "
+                f'{self.template_source!r}')
+
+        if source == 'baeza':
+            # Per-star normalised shapes: no dust, no PLR betas, so these are
+            # multiband-mode by construction and the DES zero-point correction
+            # (which shifts betas) does not apply.
+            templates = load_multiband_dir(path)
+            if not templates:
+                raise ValueError(f'no Multiband templates found in {path}')
+            if self.baeza_combine == 'first':
+                return templates[0]
+            if isinstance(self.baeza_combine, int):
+                from .templates import load_medoid_templates  # noqa: F401
+                k = max(1, int(self.baeza_combine))
+                # cluster in shape space and keep the first medoid
+                return average_multiband_templates(templates[:k])
+            return average_multiband_templates(templates)
+
         template = load_rr_template(path, name=self.template_name)
 
         if self.template_mode == 'multiband':

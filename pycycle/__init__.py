@@ -27,7 +27,8 @@ Rubin DP2 catalogs (see :mod:`pycycle.dp2`)::
 from .core import PeriodSearch, PeriodSearchResult
 from .results import results_table
 from .templates import (load_rr_template, load_multiband_template,
-                         load_multiband_templates,
+                         load_multiband_templates, load_multiband_dir,
+                         is_multiband_dir,
                          average_multiband_templates, RRTemplate)
 from .template_fit import TemplateFitter, TemplateFitResult
 from .dp2 import (DP2Config, clean_epochs, fit_lightcurve, fit_catalog,
@@ -43,6 +44,8 @@ __all__ = [
     'load_rr_template',
     'load_multiband_template',
     'load_multiband_templates',
+    'load_multiband_dir',
+    'is_multiband_dir',
     'average_multiband_templates',
     'TemplateFitter',
     'TemplateFitResult',

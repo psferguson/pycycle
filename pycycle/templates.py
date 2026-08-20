@@ -221,6 +221,69 @@ def load_multiband_templates(zip_path: str, n_phase: int = 100,
     return templates
 
 
+def load_multiband_dir(dir_path: str, n_phase: int = 100,
+                        max_templates: int = None, pattern: str = '*.txt') -> list:
+    """Load Multiband-templates from a **directory** of loose ``.txt`` files.
+
+    Same file format as :func:`load_multiband_templates` reads out of a ZIP
+    (a CSV with ``Mag``/``Phase``/``Band`` columns, one row per phase point per
+    band), but for the case where the archive has already been unpacked -- which
+    is how the Baeza-Villagra 2025 templates are usually distributed alongside a
+    notebook.
+
+    Parameters
+    ----------
+    dir_path : str
+        Directory holding the per-star template files, e.g.
+        ``.../new_templates/RRab``.
+    n_phase : int
+        Phase grid points to resample onto.
+    max_templates : int, optional
+        Cap the number loaded (quick tests).
+    pattern : str
+        Glob pattern for template files.
+
+    Returns
+    -------
+    list of RRTemplate
+        One per star, in filename order.  Empty if the directory has no
+        matching files.
+
+    See Also
+    --------
+    average_multiband_templates : collapse the list to a single mean template.
+    load_medoid_templates : pick k representative templates by clustering.
+    """
+    import glob as _glob
+
+    paths = sorted(_glob.glob(os.path.join(os.path.expanduser(dir_path), pattern)))
+    if max_templates is not None:
+        paths = paths[:max_templates]
+    templates = []
+    for path in paths:
+        name = os.path.splitext(os.path.basename(path))[0]
+        try:
+            with open(path) as fh:
+                templates.append(_parse_mb_template(fh.read(), name, n_phase))
+        except Exception:
+            continue
+    return templates
+
+
+def is_multiband_dir(dir_path: str, pattern: str = '*.txt') -> bool:
+    """True if *dir_path* looks like an unpacked Multiband-templates directory.
+
+    Distinguishes a Baeza-Villagra style directory of per-star ``.txt`` files
+    from an rr-templates directory, which is identified by ``templates.csv``.
+    """
+    import glob as _glob
+
+    d = os.path.expanduser(dir_path)
+    if os.path.exists(os.path.join(d, 'templates.csv')):
+        return False
+    return bool(_glob.glob(os.path.join(d, pattern)))
+
+
 def average_multiband_templates(templates: list, n_phase: int = 100) -> RRTemplate:
     """Return an averaged RRTemplate from a list of Multiband templates.
 
