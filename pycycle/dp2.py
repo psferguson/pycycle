@@ -213,6 +213,19 @@ class DP2Config:
         the DP1 fallback path.
     magerr_max : float
         Drop epochs with error above this (mag).  0.2 keeps S/N >~ 5.
+    max_mad_deviation : float or None
+        Robust outlier clip: drop epochs deviating from their band's median by
+        more than this many (MAD-scaled) sigma.  ``None`` disables it.
+
+        This catches a failure mode the error cut cannot: DP2 contains occasional
+        catastrophically wrong measurements carrying **normal error bars and no
+        quality flags** -- observed deviations of 6-9 mag with quoted errors of
+        0.006-0.07 mag.  Nothing in the error model or the flags identifies them,
+        so the only handle is deviation from the star's own light curve.
+
+        Choose the threshold with RRab variability in mind: a genuine RRab reaches
+        only ~1.5-2 MAD from its median, so a clip at 6-8 is safe.  Too tight a
+        value would start removing real pulsation.
     min_epochs : int
         Minimum surviving epochs (all bands) required to attempt a fit.
     min_band_epochs : int
@@ -280,6 +293,7 @@ class DP2Config:
     fluxerr_col: str | None = 'psfFluxErr'
 
     magerr_max: float = 0.2
+    max_mad_deviation: float | None = None
     min_epochs: int = 10
     min_band_epochs: int = 5
     min_bands: int = 2
@@ -547,6 +561,22 @@ def clean_epochs(lc, cfg: DP2Config | None = None):
     hjd, mag, magerr, filts = hjd[keep], mag[keep], magerr[keep], filts[keep]
     if len(hjd) == 0:
         return empty
+
+    # 3b. robust per-band outlier clip (see max_mad_deviation)
+    if cfg.max_mad_deviation is not None and len(hjd) > 5:
+        good = np.ones(len(hjd), dtype=bool)
+        for b in np.unique(filts):
+            s = filts == b
+            if s.sum() < 5:
+                continue
+            med = np.median(mag[s])
+            mad = np.median(np.abs(mag[s] - med)) * 1.4826
+            if mad <= 0:
+                continue
+            good[s] = np.abs(mag[s] - med) / mad <= cfg.max_mad_deviation
+        hjd, mag, magerr, filts = hjd[good], mag[good], magerr[good], filts[good]
+        if len(hjd) == 0:
+            return empty
 
     # 4. drop under-sampled bands
     if cfg.min_band_epochs > 1:

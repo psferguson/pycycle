@@ -325,6 +325,43 @@ class TestFitLightcurve:
         assert 0.0 < row['tf_chi2_dof'] < 10.0
 
 
+class TestMadClip:
+    """max_mad_deviation catches epochs no error cut or flag can see.
+
+    DP2 contains catastrophically wrong measurements carrying NORMAL error bars
+    and no quality flags -- observed at 6-9 mag deviation with quoted errors of
+    0.006-0.07 mag. The only handle is deviation from the star's own light curve.
+    """
+
+    def test_removes_catastrophic_outlier_with_normal_error(self):
+        _, lc = _lc_frame(n_per_band=30, noise=0.01)
+        lc.loc[10, 'psfMag'] = lc.loc[10, 'psfMag'] + 8.0   # 8 mag off, error untouched
+        base = DP2Config(run_period_search=False)
+        n_off = len(clean_epochs(lc, base)[0])
+        clipped = DP2Config(run_period_search=False, max_mad_deviation=6.0)
+        t, m, e, f = clean_epochs(lc, clipped)
+        assert len(t) == n_off - 1
+        assert m.max() < 30.0
+
+    def test_disabled_by_default(self):
+        assert DP2Config().max_mad_deviation is None
+
+    def test_does_not_clip_real_rrab_variation(self):
+        """A genuine RRab reaches only ~2 MAD, so a clip at 6 must keep it whole."""
+        _, lc = _lc_frame(n_per_band=30, noise=0.01, A=1.2)   # large amplitude
+        base = len(clean_epochs(lc, DP2Config(run_period_search=False))[0])
+        clipped = len(clean_epochs(lc, DP2Config(run_period_search=False,
+                                                 max_mad_deviation=6.0))[0])
+        assert clipped == base
+
+    def test_period_still_recovered_after_clipping(self):
+        tmpl, lc = _lc_frame(period=0.58, n_per_band=30, noise=0.01)
+        lc.loc[5, 'psfMag'] = lc.loc[5, 'psfMag'] - 7.0
+        cfg = DP2Config(run_period_search=False, max_mad_deviation=6.0)
+        row = fit_lightcurve(*clean_epochs(lc, cfg), tmpl, cfg)
+        assert row['tf_period'] == pytest.approx(0.58, rel=0.02)
+
+
 class TestTemplateMode:
     """multiband mode drops the PLR/dust terms that bias the period short."""
 
