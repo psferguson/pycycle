@@ -306,3 +306,63 @@ def test_warm_start_same_result():
     assert abs(result_warm.best_period - gold) / gold < 0.02, (
         f'warm_start: period={result_warm.best_period:.7f} d, gold={gold} d'
     )
+
+
+# ---------------------------------------------------------------------------
+# Period grid bounds
+# ---------------------------------------------------------------------------
+
+def test_period_grid_respects_pmin():
+    """The grid must not contain periods below pmin.
+
+    Only the upper bound used to be filtered, so a baseline shorter than 2*pmin
+    yielded the single period tspan/2 -- far below pmin -- and it was reported
+    as a measurement.  On real DP2 data this produced periods of 0.011-0.033 d
+    against a requested 0.44-0.89 d range.
+    """
+    import numpy as np
+    from pycycle.template_fit import _make_period_grid
+
+    hjd = np.linspace(0.0, 50.0, 200)
+    p = _make_period_grid(hjd, pmin=0.44, dphi=0.02, pmax=0.89)
+    assert p.size > 0
+    assert p.min() >= 0.44
+    assert p.max() <= 0.89
+
+
+def test_period_grid_refuses_short_baseline():
+    """A baseline that cannot contain the requested range must raise, not invent."""
+    import numpy as np
+    import pytest
+    from pycycle.template_fit import _make_period_grid
+
+    # tspan = 0.5 d, so the longest constrainable period is 0.25 d < pmin
+    hjd = np.linspace(0.0, 0.5, 20)
+    with pytest.raises(ValueError, match='too short'):
+        _make_period_grid(hjd, pmin=0.44, dphi=0.02, pmax=0.89)
+
+
+def test_short_baseline_fit_reports_failure_not_a_bogus_period():
+    """fit_lightcurve must record the failure rather than a sub-pmin period."""
+    import numpy as np
+    from pycycle.dp2 import DP2Config, fit_lightcurve
+    from pycycle.templates import RRTemplate
+
+    rng = np.random.default_rng(0)
+    n = 40
+    hjd = rng.uniform(0.0, 0.5, n)          # 0.5 d baseline, far too short
+    filts = np.array(['g', 'r'] * (n // 2))
+    mag = 20.0 + rng.normal(0, 0.02, n)
+    magerr = np.full(n, 0.02)
+
+    phase = np.linspace(0, 1, 64, endpoint=False)
+    gamma = np.vstack([np.sin(2 * np.pi * phase)] * 2)
+    tmpl = RRTemplate(name='t', bands=['g', 'r'], phase=phase, gamma=gamma,
+                      dust=None, betas=None)
+    cfg = DP2Config(pmin=0.44, pmax=0.89, min_epochs=10, min_band_epochs=1,
+                    run_period_search=False, prefilter=False, refine=False)
+
+    row = fit_lightcurve(hjd, mag, magerr, filts, tmpl, cfg)
+    assert row['status'] == 'tf_failed'
+    assert not np.isfinite(row['tf_period'] or np.nan)
+    assert 'too short' in row['error']

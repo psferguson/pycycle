@@ -56,15 +56,48 @@ def fit_weights(magerr, use_errors: bool = True):
 
 
 def _make_period_grid(hjd, pmin, dphi, pmax=None):
+    """Frequency-uniform period grid spanning ``[pmin, pmax]``.
+
+    The longest period searched is ``tspan/2`` -- a Nyquist-like limit, since a
+    period longer than half the baseline cannot be constrained.
+
+    Raises
+    ------
+    ValueError
+        If the baseline is too short to contain any period in ``[pmin, pmax]``.
+        This used to pass silently: ``minfreq = 2/tspan`` exceeds
+        ``maxfreq = 1/pmin`` once ``tspan < 2*pmin``, leaving ``nfreq`` clamped
+        to 1 and the grid holding the single period ``tspan/2`` -- far *below*
+        ``pmin``.  Only the upper bound was filtered, so that value survived and
+        was reported as a measurement.  On 5,557 real DP2 fits it produced 69
+        periods between 0.011 and 0.033 d against a requested range of
+        0.44-0.89 d (1.2%), every one of them on a light curve too short to fit
+        at all.  Refusing is the honest outcome: the caller records the failure
+        instead of a fabricated period.
+    """
+    hjd = np.asarray(hjd, dtype=float)
     tspan = np.max(hjd) - np.min(hjd)
+    if not np.isfinite(tspan) or tspan <= 0:
+        raise ValueError(f'degenerate time baseline: tspan={tspan!r}')
+
     maxfreq = 1.0 / pmin
     minfreq = 2.0 / tspan
     deltafreq = dphi / tspan
     nfreq = max(1, int((maxfreq - minfreq) / deltafreq))
     farray = minfreq + np.arange(nfreq) * deltafreq
     periods = 1.0 / farray
+
+    # bound on BOTH sides -- see the docstring for what omitting the lower one cost
+    keep = periods >= pmin
     if pmax is not None:
-        periods = periods[periods <= pmax]
+        keep &= periods <= pmax
+    periods = periods[keep]
+
+    if periods.size == 0:
+        raise ValueError(
+            f'time baseline {tspan:.4f} d is too short to search periods in '
+            f'[{pmin}, {pmax if pmax is not None else tspan / 2:.4f}] d: the '
+            f'longest constrainable period is tspan/2 = {tspan / 2:.4f} d')
     return periods
 
 
@@ -333,7 +366,7 @@ class TemplateFitResult:
             axes = [ax] * len(self.filtnams)
             created, overlay = False, True
 
-        colors = ['steelblue', 'seagreen', 'tomato', 'goldenrod', 'orchid']
+        from .lsst_style import band_color, band_symbol
         ph_dense = np.linspace(0.0, 1.0, 400, endpoint=False)
         inverted = set()
 
@@ -342,13 +375,14 @@ class TemplateFitResult:
             if not mask.any():
                 continue
             ph_obs = (freq * self._hjd[mask] + phi) % 1.0
-            c = colors[i % len(colors)]
+            c = band_color(fname)
 
             # data
+            mk = band_symbol(fname)
             ax_.errorbar(ph_obs, self._mag[mask], yerr=self._magerr[mask],
-                         fmt='o', ms=4, alpha=0.6, color=c, label=fname)
+                         fmt=mk, ms=4, alpha=0.6, color=c, label=fname)
             ax_.errorbar(ph_obs + 1, self._mag[mask], yerr=self._magerr[mask],
-                         fmt='o', ms=4, alpha=0.6, color=c)
+                         fmt=mk, ms=4, alpha=0.6, color=c)
 
             # template curve
             try:

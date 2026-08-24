@@ -21,9 +21,11 @@ import matplotlib.pyplot as plt
 _BLUE = 'dodgerblue'
 _RED = 'salmon'
 
-#: Per-band colours used when several bands share one panel.
-_BAND_COLORS = ['steelblue', 'seagreen', 'tomato', 'goldenrod', 'orchid',
-                'slategrey']
+#: Per-band colours used when several bands share one panel.  These are the
+#: official Rubin colourblind-friendly mappings from RTN-045 -- see
+#: :mod:`pycycle.lsst_style`, which prefers ``lsst.utils.plotting`` when the
+#: stack is importable and falls back to a vendored copy otherwise.
+from .lsst_style import band_color as _band_color  # noqa: E402
 
 
 def _prepare_axes(axes, nfilts, figsize, sharex=True, npanels=None):
@@ -120,7 +122,7 @@ def plot_observations(hjd, mag, filts, filtnams, tag=None, plotfile=None,
             continue
         xx, yy = x[ok], mag[ok]
         ax = panels[i]
-        color = _BAND_COLORS[i % len(_BAND_COLORS)] if overlay else _BLUE
+        color = _band_color(fname) if overlay else _BLUE
         ax.scatter(xx, yy, color=color, alpha=0.5,
                    label=fname if overlay else None)
         ymin, ymax = min(ymin, np.min(yy)), max(ymax, np.max(yy))
@@ -303,7 +305,7 @@ def plot_phased(hjd, mag, magerr, filts, filtnams, period,
         xx, yy, ee = x[ok], mag[ok], magerr[ok]
         phi = (xx / period) % 1.0
         ax = panels[i]
-        color = _BAND_COLORS[i % len(_BAND_COLORS)] if overlay else _BLUE
+        color = _band_color(fname) if overlay else _BLUE
         ax.errorbar(phi, yy, yerr=ee, fmt='o', color=color, alpha=0.5,
                     label=fname if overlay else None)
         ax.errorbar(phi + 1, yy, yerr=ee, fmt='o', color=color, alpha=0.5)
