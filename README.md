@@ -21,6 +21,29 @@ print(result.best_period)
 result.plot_phased()
 ```
 
+`run()` takes a `combine=` keyword controlling how the per-band periodograms are
+merged into one: `'sum'` (default), `'ranksum'`, or `'normsum'`. The default sums
+**raw** PSI, so a band with a larger raw scale can dominate the pick — on a
+constructed example with true P = 0.6231, single-band `g` and `i` both give
+0.62310 while `r` and `z` alias to ≈0.4751 with 15–20× the raw PSI, and `'sum'`
+follows them. `'ranksum'` and `'normsum'` both pick correctly there.
+
+That said, **`'sum'` remains the default deliberately.** On 14 real DP2 known RR
+Lyrae, judged against the template period, rank-summing is *worse*:
+
+| combine | within 1% | within 5% | median \|ΔP/P\| |
+|---|---|---|---|
+| `'sum'` | 9/14 | 9/14 | 0.0003 |
+| `'ranksum'` | 8/14 | 9/14 | 0.0029 |
+| `'normsum'` | 9/14 | **11/14** | 0.0003 |
+
+`'normsum'` is the better candidate if one is to change, but 14 objects is too
+small a sample to move a default on.
+
+The result also exposes `psi_per_band` (shape `(n_bands, n_periods)`), `bands`,
+`n_epochs_used`, `psi_combined`, and `psi_per_epoch` — the last because PSI is
+linear in epoch count and so ranks well-sampled junk highly across a catalogue.
+
 See `notebooks/tutorial.ipynb` for a full walkthrough.
 
 ---
@@ -96,7 +119,7 @@ See `notebooks/template_fitting.ipynb` for a complete worked example.
 | Year 1–3 | ~4–10 | **Template fitting directly** — period search is unreliable at this sparsity |
 | Year 5–7 | ~15–30 | **Template fitting directly** |
 | Year 10 | ~50–100 | **Period search → template fitting** on high-PSI candidates |
-| Well-sampled (>30/band) | any | **Period search first** (~5 s/star), then template fit candidates |
+| Well-sampled (>30/band) | any | **Period search first**, then template fit candidates |
 | All variable types | any | **Period search** — template fitting is RRab-specific |
 
 ---
@@ -183,9 +206,7 @@ results = fit_object_ids([735954534639105918, 738184412939704186], cfg)
 results[['objectId', 'ps_period', 'tf_period', 'period_ratio', 'status']]
 ```
 
-**Full catalog sweep** — a `map_partitions` path; pair it with
-`prefilter=True` and `run_period_search=False` for a cheap large sweep that
-only spends the template-fit budget on plausible variables:
+**Full catalog sweep** — a `map_partitions` path:
 
 ```python
 from dask.distributed import Client
@@ -194,29 +215,86 @@ import lsdb
 
 client = Client(n_workers=8, threads_per_worker=1)
 cfg = DP2Config(template_dir='~/software/rr-templates/template_des',
-                run_period_search=False,   # template fit only, much cheaper
-                prefilter=True)            # skip obviously non-variable stars
+                run_period_search=True,    # only ~3% of the cost; keep the cross-check
+                prefilter=True)
 cat = open_dp2(cfg, search_filter=lsdb.ConeSearch(ra=61.25, dec=-48.46,
                                                    radius_arcsec=3600.0))
 cat = cat.query('refExtendedness < 0.5')
 results = fit_catalog(cat, cfg).compute()
 ```
 
+**Where the time actually goes.** Measured on real DP2 light curves of 63–148
+epochs, per object:
+
+| component | cost |
+|---|---|
+| template fit | 1,573 ms |
+| period refinement (`refine=True`) | +132 ms (9%) |
+| PeriodSearch (`run_period_search=True`) | +50 ms (**3.2%**) |
+| post-fit diagnostics (`fit_features=True`) | +14 ms (<1%) |
+
+So a catalogue sweep is **template-fit-bound**. Turning PeriodSearch off saves
+about 3%, not the "roughly 2×" that earlier versions of this file and the
+project scripts claimed — leave it on and keep the independent period. The
+`prefilter` is a different story: on deep-drilling cadence it rejects only
+0.16–0.80% of objects, because the Stringer et al. thresholds were calibrated
+for sparse data (DES median 10 epochs total) and almost everything with 67–192
+epochs shows some scatter. The dominant cut is `too_few_epochs`, at 82–85%.
+
 Both paths return **one row per object, including failures** — unlike
 `lsdb_utils.make_template_fit_fn`, which drops them — tagged by a `status`
 column: `ok`, `too_few_epochs`, `too_few_bands`, `band_mismatch`, `prefiltered`,
-`ps_failed`, `tf_failed`, or `error`. The partition's HEALPix index and
+`tf_failed`, or `error`.
+
+> **`status` describes the template fit only.** It used to be overwritten with
+> `ps_failed` when *PeriodSearch* raised, even though the template fit had
+> succeeded — so filtering on `status == 'ok'` silently discarded rows carrying
+> perfectly good periods (1,080 rows in one run, 5,941 in another, and it biased
+> a configuration comparison before anyone noticed). PeriodSearch now reports
+> separately in **`ps_status`** (`ok` / `failed` / `skipped`). **Select fitted
+> rows with `tf_period.notna()`, not `status == 'ok'`.** The partition's HEALPix index and
 `coord_ra`/`coord_dec` are preserved, so the result is still a valid LSDB
 catalog; `objectId` is taken from its column, not the index (LSDB indexes on
 `_healpix_29`).
 
 Output columns include both `ps_period` (from `PeriodSearch`, if
-`run_period_search=True`) and `tf_period` (from the template fit), plus
-`period_ratio = tf_period / ps_period` as an alias diagnostic (0.5 or 2.0
-signals a period alias), `tf_period_coarse`, `tf_chi2_dof`, `at_period_bound`
-(the fitted period landed within 1% of `pmin`/`pmax` — usually a railed fit
-rather than a real measurement), and the `lchi_med`/`sig_max` variability
-statistics.
+`run_period_search=True`) and `tf_period` (from the template fit),
+`tf_period_coarse`, `tf_chi2_dof`, `at_period_bound` (the fitted period landed
+within 1% of `pmin`/`pmax` — usually a railed fit rather than a real
+measurement), and the `lchi_med`/`sig_max` variability statistics.
+
+`period_ratio = tf_period / ps_period` is recorded as an alias diagnostic (0.5
+or 2.0 signals a period alias), but **do not use it as a cut.** Measured against
+mock ground truth, P(correct | the two agree) = 68.2% versus
+P(correct | they disagree) = 60.4% — eight points of discrimination, while
+discarding **71% of correctly recovered RRab**. Keep it as a flag.
+
+### Post-fit diagnostics
+
+Every row also carries the statistics from `pycycle.fit_features`, which exist
+because the natural quality metric — `|P_fit − P_true|/P_true` — needs the truth
+and so can rank algorithms but can never flag a candidate in real data.
+
+| column | what it measures |
+|---|---|
+| `tf_r2`, `tf_rss_flat` | `tf_r2 = 1 − RSS_best/RSS_flat`, the fraction of weighted variance the fold explains against a per-band constant. Both sums run over the same points with the same weights, so **epoch count cancels** — unlike `ps_psi`, it is comparable between objects. |
+| `tf_peak_ratio`, `tf_period_2nd`, `tf_r2_2nd` | the best *well-separated* competing period and how much worse it is. Is the minimum a peak, or one tooth of an alias comb? |
+| `tf_phase_scatter`, `tf_amp_ratio`, `tf_n_band_fit` | per-band independent phase and amplitude refit at the fixed best period. A true period phases every band coherently; a spurious one does not. |
+| `win_power`, `win_pct`, `win_max` | spectral window power at the fitted frequency. Ground-based cadence puts most of its window power on periods commensurate with a day, so a period sitting on such a peak is a property of the observing calendar rather than of the star. |
+| `ps_psi_per_epoch` | `ps_psi` divided by the epochs PeriodSearch used. PSI ≈ (N/2)(A/σ)² summed over bands, i.e. **linear in epoch count**, so raw `ps_psi` promotes well-sampled junk across a catalogue. |
+
+They cost **under 1%** of the fit and are controlled by `DP2Config.fit_features`
+(plus `fit_features_per_band`, `fit_features_window`, `peak_sep_frac`).
+
+Two warnings that come out of running this over the six DP2 deep fields:
+
+* **Do not cut on `tf_chi2_dof`.** Its median across those fields is 0.66, but
+  the known RR Lyrae sit at the **83rd–99th percentile of their own field** — a
+  real variable with underestimated errors produces a *large* chi2. The cut
+  deletes the signal.
+* **`mu_<band>` is `NaN` when that band was absent from the fit.** It used to be
+  written as `0.0`, which silently poisoned any colour or distance modulus
+  computed from it.
 
 **Template mode** (`DP2Config.template_mode`, default `'multiband'`): controls
 what physics the fit may assume.
