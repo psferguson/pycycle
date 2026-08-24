@@ -66,6 +66,12 @@ def compute_periodogram(
         Hybrid PSI = 2*fy/theta at each period.
     conf : ndarray of float64
         Significance threshold for PSI (sum of two noise realisations).
+    nok : int
+        Number of observations of filter *fwant* that passed the error cut
+        and were actually used to build *psi*.  Exposed so callers can form
+        an epoch-normalised PSI (raw PSI is linear in epoch count -- see
+        :func:`pycycle.core.combine_periodograms` and
+        :attr:`pycycle.core.PeriodSearchResult.psi_per_epoch`).
     """
     if verbose:
         print('periodogram: BEGIN')
@@ -153,4 +159,4 @@ def compute_periodogram(
     conf = conf1 + conf2
     if verbose:
         print('periodogram: END')
-    return x, fy, theta, psi, conf
+    return x, fy, theta, psi, conf, nok

@@ -771,7 +771,11 @@ def fit_lightcurve(hjd, mag, magerr, filts, template, cfg: DP2Config | None = No
             # one across a catalogue, where it promotes well-sampled junk over
             # real variables.  Dividing by N is what makes it comparable
             # between objects; keep both so the raw value stays auditable.
-            row['ps_psi_per_epoch'] = row['ps_psi'] / n if n else np.nan
+            # prefer PeriodSearch's own count of the epochs it actually used --
+            # it applies per-band quality cuts of its own, so len(hjd) can
+            # overstate the denominator
+            n_used = getattr(ps_result, 'n_epochs_used', None) or n
+            row['ps_psi_per_epoch'] = row['ps_psi'] / n_used if n_used else np.nan
             tops = ps_result.top_periods(n=2)
             if len(tops) > 1:
                 row['ps_period_alt'] = float(tops['period'][1])

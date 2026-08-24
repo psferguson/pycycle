@@ -20,19 +20,47 @@ Branch `dp2-lsdb`, 5 commits ahead of `main`, 107 tests passing.
 | `load_multiband_dir` + `template_source` | Baeza-Villagra templates loadable; Stringer still the default |
 | `max_mad_deviation` outlier clip | DP2 has 6-9 mag bad epochs with normal errors and no flags |
 
-## 1. Fix `PeriodSearch.best_period` band combination — highest value
+## 1. `PeriodSearch.best_period` band combination — DONE, and the claim was overstated
 
-`core.py:54` sums **raw** PSI across bands with no per-band normalisation, so a band
-with larger raw PSI dominates. On a worked mock (true P = 0.6231): single-band g gives
-0.62332 and i gives 0.62247, but the raw sum follows r and z to 0.4753, a 23.7% error.
-Grid density is irrelevant (`dphi` 0.02 → 0.002 changes nothing) and the true period is
-in the top 5 about **60%** of the time — the search works, the *pick* fails.
+**Implemented 2026-08-24.** `combine_periodograms(psi_per_band, method=)` and
+`PeriodSearch.run(..., combine=)` now offer `'sum'` (unchanged default), `'ranksum'` and
+`'normsum'`; `PeriodSearchResult` exposes `psi_per_band`, `bands`, `n_epochs_used`,
+`psi_combined` and `psi_per_epoch`. 124 tests pass.
 
-Rank-summing the per-band periodograms instead lifts bright-mock recovery from
-**23% → 37%**. Expose the per-band periodograms so callers can combine deliberately.
+**The mechanism is real.** `core.py:54` summed raw PSI across bands, so a band with
+larger raw PSI dominates. The worked example reproduces closely: on a constructed draw
+with true P = 0.6231, single-band g and i both give 0.62310 while r and z alias to
+≈0.4751 with 15-20x the raw PSI (1636.7 and 1094.2 against 66.9 and 93.2), and `'sum'`
+follows them. `'ranksum'` and `'normsum'` both pick correctly there.
+
+**But the headline number does not hold, and the recommended fix is the wrong one.**
+
+* The **23% → 37%** figure did not reproduce. Isolating the mechanism in synthetic mocks
+  moves recovery ~1 point (99% → 100%), not 14. No physically plausible construction
+  reproduced the aggregate number.
+* Rank-summing is **not uniformly better**: it wins when bands share an aliasing cadence
+  and loses when one band is merely noisy but still correctly peaked (100% → 93.3%).
+* On **14 real DP2 known RR Lyrae**, judged against the template period, rank-summing is
+  *worse* than the status quo:
+
+  | combine | within 1% | within 5% | median \|ΔP/P\| |
+  |---|---|---|---|
+  | `sum` | 9/14 | 9/14 | 0.0003 |
+  | `ranksum` | 8/14 | 9/14 | 0.0029 |
+  | `normsum` | 9/14 | **11/14** | 0.0003 |
+
+  Neither alternative rescues any of the 5 objects where `sum` already disagrees.
+
+So `'sum'` stays the default. `'normsum'` is the better candidate if one is to change —
+it matched or beat `sum` in every test, on mocks and on real data — but 14 objects is
+too small to move a default on. **Re-decide this against the full known-RRL run**
+(`artifacts/known_rrl_fits.parquet`, thousands of objects), not against the mocks.
+
+This item was labelled "highest value". On the evidence it is not: the effect is real
+but small, and the specific fix proposed made things slightly worse.
 
 Overall on mocks, PeriodSearch has Spearman **0.109** with truth versus 0.472 for the
-template fit, so nothing that depends on its period should be trusted until this is fixed.
+template fit — that part stands, and is the stronger reason not to lean on its period.
 
 ## 2. Normalise PSI, and record `ps_psi` and `tf_r2` as first-class outputs
 

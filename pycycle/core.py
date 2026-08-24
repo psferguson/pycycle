@@ -13,6 +13,111 @@ except ImportError:
     _BACKEND = 'pure Python'
 
 
+#: Combination strategies understood by :func:`combine_periodograms` and
+#: the ``combine=`` keyword of :meth:`PeriodSearch.run`.
+COMBINE_STRATEGIES = ('sum', 'ranksum', 'normsum')
+
+
+def combine_periodograms(psi_per_band, method='sum'):
+    """Combine per-band PSI periodograms into a single across-band score.
+
+    Background
+    ----------
+    PSI ≈ (N/2)(A/σ)² summed over the epochs of one band, so its *scale* is
+    set by that band's epoch count, photometric noise, and amplitude -- not
+    by how well it constrains the period.  Summing raw PSI across bands
+    (``method='sum'``) therefore lets whichever band happens to have the
+    largest scale dominate the pick, even when a different band's periodogram
+    peaks squarely on the true period.
+
+    This is reproducible, not hypothetical: a synthetic RRab mock with r and
+    z sharing a ~2-day cadence (common in filter-rotating surveys -- a
+    0.5 cycle/day sampling frequency) aliases their periodograms to the same
+    wrong period, while g and i (sampled at continuous random epochs)
+    independently recover the truth.  For an injected P = 0.6231 d this
+    aliases to P ≈ 0.4750 d, matching the failure period quoted in
+    ``docs/TODO.md`` item 1 (0.4753 d) to <0.1%.  In that specific draw:
+    g and i individually recovered P = 0.62310 d (max PSI 66.9 and 93.2),
+    but r and z both peaked at P ≈ 0.4751 d with far larger raw PSI (1636.7
+    and 1094.2) purely from epoch count and cadence, not from evidence, and
+    ``'sum'`` followed them.  ``'ranksum'`` and ``'normsum'`` both recovered
+    P = 0.62310 d on that same draw.  See ``psearch_combine_eval.py``
+    (measurement script referenced in the task record; reproduces this
+    exact case as its "worked-example reproduction").
+
+    Measured over 300 such mocks (period drawn uniformly in [0.44, 0.90] d),
+    this shared-cadence-aliasing regime gives: ``'sum'`` 99.0% recovery
+    (|P_fit-P_true|/P_true < 1%), ``'ranksum'`` 100.0%, ``'normsum'`` 100.0%.
+    The effect is real but *far smaller* in this isolated synthetic test
+    than the 23% -> 37% aggregate improvement quoted in ``docs/TODO.md``;
+    the real DP2 catalogue evidently hits this failure mode (or others like
+    it) more often than one specific alias geometry does in isolation.
+
+    Rank/scale normalisation is not free, however: a second synthetic
+    regime (one band with far more epochs but heavily damped amplitude and
+    higher noise, still correctly peaking at the true period, just with a
+    smaller peak) shows the opposite ordering -- ``'sum'`` 100.0% recovery,
+    ``'ranksum'`` 93.3%, ``'normsum'`` 100.0%.  Converting to ranks discards
+    the magnitude information that would otherwise let a low-S/N band's
+    correct-period vote be down-weighted relative to a high-S/N band's, and
+    that costs ``'ranksum'`` accuracy when every band is actually right.
+    ``'normsum'`` did at least as well as ``'sum'`` in both regimes tested.
+    This is why ``combine='sum'`` remains the default (see
+    :meth:`PeriodSearch.run`) rather than switching to ``'ranksum'``: the
+    measurement does not show it uniformly better, only better in a
+    specific (real, but not universal) failure mode.
+
+    Parameters
+    ----------
+    psi_per_band : ndarray of float64, shape (n_bands, n_periods) or (n_periods,)
+        Per-band PSI periodograms, one row per band, on a shared period
+        grid.  A 1-D input (single band) is returned unchanged (a copy) --
+        there is nothing to combine.
+    method : {'sum', 'ranksum', 'normsum'}, optional
+        - ``'sum'`` (default): add the raw PSI values.  Matches pycycle's
+          original behaviour; kept as the library default so that existing
+          callers (e.g. ``pycycle.dp2.fit_lightcurve``) see identical
+          ``best_period``/``psi_m`` semantics unless they opt in.  See
+          "Background" above for why this is *not* recommended when bands
+          differ substantially in epoch count, noise, or amplitude.
+        - ``'ranksum'``: replace each band's PSI values with their rank
+          (1 = worst period, n_periods = best) along the period axis, then
+          sum the ranks across bands.  No single band can dominate by raw
+          scale; a band only wins by consistently favouring a period more
+          than the others do.
+        - ``'normsum'``: divide each band's PSI by that band's own peak
+          value (so each band's best period contributes exactly 1.0), then
+          sum.  Cheaper than ``'ranksum'`` (no sort) and preserves each
+          band's relative peak shape, unlike a full z-score, but a band
+          that is pure noise still contributes an artificial peak of
+          height 1.0 -- ``'ranksum'`` is more robust to that failure mode.
+
+    Returns
+    -------
+    psi_combined : ndarray of float64, shape (n_periods,)
+    """
+    psi_per_band = np.asarray(psi_per_band, dtype=np.float64)
+    if psi_per_band.ndim == 1:
+        return psi_per_band.copy()
+
+    if method == 'sum':
+        return psi_per_band.sum(axis=0)
+    elif method == 'ranksum':
+        ranks = np.empty_like(psi_per_band)
+        for i, row in enumerate(psi_per_band):
+            order = np.argsort(row, kind='stable')
+            ranks[i, order] = np.arange(1, row.shape[0] + 1, dtype=np.float64)
+        return ranks.sum(axis=0)
+    elif method == 'normsum':
+        peak = psi_per_band.max(axis=1, keepdims=True)
+        peak = np.where(peak > 0, peak, 1.0)  # guard an all-zero (or all-negative) band
+        return (psi_per_band / peak).sum(axis=0)
+    else:
+        raise ValueError(
+            "Unknown combine method %r; choose one of %s" % (method, COMBINE_STRATEGIES)
+        )
+
+
 class PeriodSearchResult:
     """Container for the output of a :class:`PeriodSearch` run.
 
@@ -22,14 +127,35 @@ class PeriodSearchResult:
         Test periods [days] — the same grid for all filters.
     psi_m : ndarray of float64
         PSI periodogram.  Shape ``(M, N)`` for *M > 1* filters, or ``(N,)``
-        for a single filter.
+        for a single filter.  Unchanged from earlier pycycle versions --
+        kept exactly as-is for backward compatibility.  New code should
+        generally prefer :attr:`psi_per_band`, which has a stable
+        ``(n_bands, n_periods)`` shape regardless of *M*.
     thresh_m : ndarray of float64
         Significance threshold; same shape as *psi_m*.
     filtnams : list of str
         Filter names associated with each row of *psi_m*.
+    psi_per_band : ndarray of float64, shape (n_bands, n_periods)
+        Per-band PSI periodograms, always 2-D (even for a single band), so
+        callers can combine them deliberately instead of relying on the
+        library's default.  Row order matches :attr:`bands`.
+    bands : list of str
+        Filter names for each row of :attr:`psi_per_band` (identical
+        content to *filtnams*; provided under this name to pair naturally
+        with *psi_per_band*).
+    combine : {'sum', 'ranksum', 'normsum'}
+        The strategy used by :attr:`best_period`, :attr:`psi_combined`, and
+        ``top_periods(filter_idx=None)`` to reduce :attr:`psi_per_band`
+        across bands.  See :func:`combine_periodograms`.
+    n_epochs_used : int
+        Total number of observations (summed over the searched bands) that
+        passed the periodogram's quality cut and actually contributed to
+        the PSI computation.  PSI is linear in epoch count at fixed
+        sampling, so this is what :attr:`psi_per_epoch` divides by.
     """
 
-    def __init__(self, ptest, psi_m, thresh_m, hjd, mag, magerr, filts, filtnams):
+    def __init__(self, ptest, psi_m, thresh_m, hjd, mag, magerr, filts, filtnams,
+                 psi_per_band=None, bands=None, combine='sum', n_epochs_used=None):
         self.ptest = ptest
         self.psi_m = psi_m
         self.thresh_m = thresh_m
@@ -38,6 +164,20 @@ class PeriodSearchResult:
         self._magerr = magerr
         self._filts = filts
         self.filtnams = filtnams
+
+        # psi_per_band is always 2-D, unlike the backward-compatible psi_m
+        # (which collapses to 1-D for a single filter).
+        if psi_per_band is not None:
+            self.psi_per_band = np.atleast_2d(psi_per_band)
+        else:
+            self.psi_per_band = np.atleast_2d(psi_m)
+        self.bands = list(bands) if bands is not None else list(filtnams)
+        if combine not in COMBINE_STRATEGIES:
+            raise ValueError(
+                "Unknown combine method %r; choose one of %s" % (combine, COMBINE_STRATEGIES)
+            )
+        self.combine = combine
+        self.n_epochs_used = int(n_epochs_used) if n_epochs_used is not None else len(hjd)
 
     # ------------------------------------------------------------------
     # convenience properties
@@ -49,10 +189,44 @@ class PeriodSearchResult:
         return 1.0 / self.ptest
 
     @property
+    def psi_combined(self):
+        """Across-band PSI, reduced from :attr:`psi_per_band` via :attr:`combine`.
+
+        For ``combine='sum'`` (the default) this is numerically identical to
+        the historical ``psi_m if psi_m.ndim == 1 else psi_m.sum(0)``
+        expression used throughout pycycle and its callers.
+        """
+        return combine_periodograms(self.psi_per_band, method=self.combine)
+
+    @property
     def best_period(self):
-        """Period [days] with the highest combined PSI across all filters."""
-        psi_combined = self.psi_m if self.psi_m.ndim == 1 else self.psi_m.sum(0)
-        return self.ptest[np.argmax(psi_combined)]
+        """Period [days] with the highest combined PSI across all filters.
+
+        Uses :attr:`combine` to reduce across bands (default ``'sum'``, the
+        original behaviour -- see :func:`combine_periodograms` for why a
+        rank- or scale-normalised combination is often a better *pick* even
+        though the raw-PSI search itself finds the right period).
+        """
+        return self.ptest[np.argmax(self.psi_combined)]
+
+    @property
+    def psi_per_epoch(self):
+        """Peak combined PSI divided by :attr:`n_epochs_used`.
+
+        PSI ≈ (N/2)(A/σ)² is linear in epoch count at fixed sampling, so raw
+        PSI is a good discriminator *within* one light curve (fixed N) but a
+        poor one *across a catalogue* of objects with different epoch
+        counts -- it actively promotes well-sampled non-variables over
+        poorly-sampled real variables.  In a worked M49 comparison the
+        visually-good objects had a median 336 epochs against 527 for the
+        rejects, i.e. raw PSI was systematically biased toward the rejects;
+        dividing by N moved a known RR Lyrae from rank 162 to rank 34 (see
+        ``docs/TODO.md`` item 2).  This attribute exposes that
+        normalisation directly so callers don't have to recompute it.
+        """
+        if not self.n_epochs_used:
+            return np.nan
+        return float(np.max(self.psi_combined)) / self.n_epochs_used
 
     # ------------------------------------------------------------------
     # result extraction
@@ -66,8 +240,9 @@ class PeriodSearchResult:
         n : int
             Number of candidates.
         filter_idx : int or None
-            Index into *filtnams* selecting a single filter.  When ``None``
-            (default) the PSI values are summed across all filters.
+            Index into *filtnams* (equivalently, :attr:`bands`) selecting a
+            single filter.  When ``None`` (default) the per-band PSI values
+            are combined across all filters via :attr:`combine`.
         write : bool
             Write the table to *filename* as CSV.
         filename : str
@@ -78,10 +253,10 @@ class PeriodSearchResult:
         astropy.table.Table
         """
         if filter_idx is not None:
-            psi = self.psi_m[filter_idx] if self.psi_m.ndim > 1 else self.psi_m
+            psi = self.psi_per_band[filter_idx]
             thresh = self.thresh_m[filter_idx] if self.thresh_m.ndim > 1 else self.thresh_m
         else:
-            psi = self.psi_m if self.psi_m.ndim == 1 else self.psi_m.sum(0)
+            psi = self.psi_combined
             thresh = self.thresh_m if self.thresh_m.ndim == 1 else self.thresh_m.sum(0)
         return results_table(self.ptest, psi, thresh, n=n, write=write, filename=filename)
 
@@ -159,7 +334,8 @@ class PeriodSearch:
         assert self.magerr.shape == self.hjd.shape
         assert self.filts.shape == self.hjd.shape
 
-    def run(self, pmin, dphi, n_thresh=1, pmax=None, periods=None, verbose=False):
+    def run(self, pmin, dphi, n_thresh=1, pmax=None, periods=None, verbose=False,
+            combine='sum'):
         """Run the period search across all filter bands.
 
         Parameters
@@ -176,6 +352,28 @@ class PeriodSearch:
             Explicit array of test periods; overrides the auto-generated grid.
         verbose : bool, optional
             Print extra diagnostic output.
+        combine : {'sum', 'ranksum', 'normsum'}, optional
+            How :attr:`PeriodSearchResult.best_period` and the default
+            ``top_periods()`` reduce per-band PSI to a single across-band
+            score; irrelevant for a single-filter search.  Default
+            ``'sum'`` reproduces pycycle's original behaviour bit-for-bit
+            and is kept as the default for backward compatibility with
+            callers (e.g. ``pycycle.dp2.fit_lightcurve``) that read
+            ``best_period``/``psi_m`` directly, *and* because a synthetic-mock
+            comparison (``psearch_combine_eval.py``) did not show
+            ``'ranksum'`` uniformly better: it wins when two bands share a
+            sampling-driven alias that a raw sum lets dominate (99.0% ->
+            100.0% recovery in that regime), but loses when a genuinely
+            low-S/N band still peaks at the correct period, because
+            converting to ranks throws away the magnitude evidence that
+            would otherwise down-weight it (100.0% -> 93.3% in that
+            regime).  ``'normsum'`` matched or beat ``'sum'`` in both
+            regimes tested and is a reasonable alternative to try.  See
+            :func:`combine_periodograms` for the full writeup and numbers.
+            Pass the per-band periodograms
+            (:attr:`PeriodSearchResult.psi_per_band`) to
+            :func:`combine_periodograms` directly if you want to compare
+            strategies after the fact without rerunning the search.
 
         Returns
         -------
@@ -187,11 +385,12 @@ class PeriodSearch:
         psi_m = None
         thresh_m = None
         ptest = None
+        n_epochs_used = 0
 
         for i, filtnam in enumerate(self.filtnams):
             if verbose:
                 print('\nPeriodSearch: filter %s' % filtnam)
-            x, fy, theta, psi, conf = compute_periodogram(
+            x, fy, theta, psi, conf, nok = compute_periodogram(
                 self.hjd, self.mag, self.magerr, self.filts,
                 fwant=filtnam, pmin=pmin, dphi=dphi,
                 n_thresh=n_thresh, pmax=pmax, periods=periods,
@@ -203,6 +402,12 @@ class PeriodSearch:
                 thresh_m = np.zeros((nfilts, len(x)))
             psi_m[i, :] = psi
             thresh_m[i, :] = conf
+            n_epochs_used += nok
+
+        # psi_per_band/thresh_per_band keep the full (nfilts, npoints) shape
+        # regardless of nfilts; psi_m/thresh_m below stay bit-identical to
+        # the historical API (1-D when nfilts == 1).
+        psi_per_band = psi_m.copy()
 
         if nfilts == 1:
             psi_m = psi_m.flatten()
@@ -211,4 +416,6 @@ class PeriodSearch:
         return PeriodSearchResult(
             ptest, psi_m, thresh_m,
             self.hjd, self.mag, self.magerr, self.filts, self.filtnams,
+            psi_per_band=psi_per_band, bands=list(self.filtnams),
+            combine=combine, n_epochs_used=n_epochs_used,
         )
