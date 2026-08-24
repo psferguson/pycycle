@@ -266,7 +266,31 @@ class DP2Config:
         Compute cheap variability statistics first and skip the fit for objects
         that fail them.  Intended for the full-catalogue path.
     prefilter_lchi_med, prefilter_sig_max : float
-        Thresholds following Stringer et al. (2019) sec. 3.2.
+        Thresholds following Stringer et al. (2019) sec. 3.2.  The published
+        ``lchi_med >= 0.5`` drops 3 of the 17 known DP2 RR Lyrae -- they have
+        less scatter than their quoted errors imply -- so the pipeline scripts
+        override it to -0.6.  The library keeps the published value as the
+        default; the divergence is deliberate and is noted here rather than
+        silently reconciled.  Note also that at deep-field scale the prefilter
+        rejects only 0.16-0.80% of objects, so it buys almost nothing: the
+        dominant cut is ``too_few_epochs`` at 82-85%.
+    fit_features : bool
+        Record the post-fit diagnostics from :mod:`pycycle.fit_features`
+        (``tf_r2`` and friends).  ``tf_r2 = 1 - RSS_best/RSS_flat`` is the
+        variability statistic worth having: because both sums run over the same
+        points with the same weights, epoch count cancels, and it reaches
+        AUC ~1.0 separating variables from flat stars where the ``lchi_med``
+        prefilter lets 99.95% of pure noise through.
+    fit_features_per_band, fit_features_window : bool
+        Sub-parts of the above.  The per-band refit is the more expensive half;
+        both together cost a few percent of the fit they describe.
+    peak_sep_frac : float
+        Fractional period separation at which a competing periodogram minimum
+        counts as a different period, for ``tf_peak_ratio``.  The previous
+        project-side implementation required 5%, which left the statistic
+        computable for only ~8% of objects while being the best single
+        right-versus-wrong-period feature available (AUC 0.803); 1% matches the
+        tolerance used to call a recovery correct and is defined far more often.
     flag_cols : list of str or 'all'
         Per-epoch flags that must be False.  ``'all'`` auto-detects every
         sub-column whose name contains ``flag``/``Flag``.
@@ -317,6 +341,11 @@ class DP2Config:
     prefilter: bool = False
     prefilter_lchi_med: float = 0.5
     prefilter_sig_max: float = 0.0
+
+    fit_features: bool = True
+    fit_features_per_band: bool = True
+    fit_features_window: bool = True
+    peak_sep_frac: float = 0.01
 
     flag_cols: object = field(default_factory=lambda: list(QUALITY_FLAGS))
 
@@ -621,12 +650,27 @@ def _blank_row(template, cfg: DP2Config) -> dict:
         'sig_max': np.nan,
         'ps_period': np.nan,
         'ps_psi': np.nan,
+        'ps_psi_per_epoch': np.nan,
         'ps_period_alt': np.nan,
+        'ps_status': 'not_run',
         'tf_period': np.nan,
         'tf_period_coarse': np.nan,
         'tf_phi': np.nan,
         'tf_rss': np.nan,
         'tf_chi2_dof': np.nan,
+        # post-fit diagnostics (pycycle.fit_features) -- recorded, never used
+        # to drop a row, so a downstream classifier can weigh them on labels
+        'tf_rss_flat': np.nan,
+        'tf_r2': np.nan,
+        'tf_r2_2nd': np.nan,
+        'tf_period_2nd': np.nan,
+        'tf_peak_ratio': np.nan,
+        'tf_phase_scatter': np.nan,
+        'tf_amp_ratio': np.nan,
+        'tf_n_band_fit': 0,
+        'win_power': np.nan,
+        'win_pct': np.nan,
+        'win_max': np.nan,
         'period_ratio': np.nan,
         'at_period_bound': False,
         'status': 'not_run',
@@ -722,13 +766,29 @@ def fit_lightcurve(hjd, mag, magerr, filts, template, cfg: DP2Config | None = No
             psi = (ps_result.psi_m if ps_result.psi_m.ndim == 1
                    else ps_result.psi_m.sum(0))
             row['ps_psi'] = float(np.max(psi))
+            # PSI ~ (N/2)(A/sigma)^2 summed over bands, so it is *linear in
+            # epoch count* -- a fine discriminator at fixed sampling and a poor
+            # one across a catalogue, where it promotes well-sampled junk over
+            # real variables.  Dividing by N is what makes it comparable
+            # between objects; keep both so the raw value stays auditable.
+            row['ps_psi_per_epoch'] = row['ps_psi'] / n if n else np.nan
             tops = ps_result.top_periods(n=2)
             if len(tops) > 1:
                 row['ps_period_alt'] = float(tops['period'][1])
+            row['ps_status'] = 'ok'
         except Exception as exc:
-            row['status'] = 'ps_failed'
+            # A PeriodSearch failure is a *diagnostic* failure: the template fit
+            # below is independent of it and its period is still valid.  Writing
+            # this into `status` (as this code used to) meant filtering on
+            # status=='ok' silently discarded good fits -- 1,080 rows in one run
+            # and 5,941 in another, which biased a configuration comparison
+            # before it was caught.  `status` now describes the template fit
+            # only; PeriodSearch reports here.
+            row['ps_status'] = 'failed'
             row['error'] = f'{type(exc).__name__}: {exc}'
             logger.debug('PeriodSearch failed: %s', exc)
+    else:
+        row['ps_status'] = 'skipped'
 
     try:
         if fitter is None:
@@ -752,6 +812,37 @@ def fit_lightcurve(hjd, mag, magerr, filts, template, cfg: DP2Config | None = No
         for name, val in tf_result.best_coeffs.items():
             if name in row:
                 row[name] = float(val)
+
+        # Post-fit diagnostics.  `tf_chi2_dof` is not a usable quality axis on
+        # its own -- on the six DP2 deep fields its median is 0.66 (errors are
+        # conservative at the faint end) while the known RR Lyrae sit at the
+        # 83rd-99th percentile of their own field, because a real variable with
+        # underestimated errors produces a *large* chi2.  Cutting on it deletes
+        # the signal.  These features are the replacement: see
+        # pycycle.fit_features for what each one is and what it was measured to
+        # be worth.
+        if cfg.fit_features:
+            try:
+                from .fit_features import fit_features as _ff
+                feats = _ff(tf_result, sep_frac=cfg.peak_sep_frac,
+                            use_errors=cfg.use_errors,
+                            per_band=cfg.fit_features_per_band,
+                            window=cfg.fit_features_window)
+                row['tf_rss_flat'] = feats['rss_flat']
+                row['tf_r2'] = feats['r2']
+                row['tf_r2_2nd'] = feats['r2_2nd']
+                row['tf_period_2nd'] = feats['period_2nd']
+                row['tf_peak_ratio'] = feats['peak_ratio']
+                for src, dst in (('phase_scatter', 'tf_phase_scatter'),
+                                 ('amp_ratio', 'tf_amp_ratio'),
+                                 ('n_band_fit', 'tf_n_band_fit'),
+                                 ('win_power', 'win_power'),
+                                 ('win_pct', 'win_pct'),
+                                 ('win_max', 'win_max')):
+                    if src in feats:
+                        row[dst] = feats[src]
+            except Exception as exc:  # diagnostics must never fail a fit
+                logger.debug('fit_features failed: %s', exc)
     except Exception as exc:
         row['status'] = 'tf_failed' if row['status'] == 'not_run' else row['status']
         row['error'] = (row['error'] + ' | ' if row['error'] else '') + \
@@ -859,12 +950,25 @@ def fit_meta(template, cfg: DP2Config | None = None):
         'sig_max': np.float64,
         'ps_period': np.float64,
         'ps_psi': np.float64,
+        'ps_psi_per_epoch': np.float64,
         'ps_period_alt': np.float64,
+        'ps_status': object,
         'tf_period': np.float64,
         'tf_period_coarse': np.float64,
         'tf_phi': np.float64,
         'tf_rss': np.float64,
         'tf_chi2_dof': np.float64,
+        'tf_rss_flat': np.float64,
+        'tf_r2': np.float64,
+        'tf_r2_2nd': np.float64,
+        'tf_period_2nd': np.float64,
+        'tf_peak_ratio': np.float64,
+        'tf_phase_scatter': np.float64,
+        'tf_amp_ratio': np.float64,
+        'tf_n_band_fit': np.int64,
+        'win_power': np.float64,
+        'win_pct': np.float64,
+        'win_max': np.float64,
         'period_ratio': np.float64,
         'at_period_bound': bool,
         'status': object,

@@ -34,6 +34,27 @@ except ImportError:
 # Period grid (mirrors periodogram.py)
 # ---------------------------------------------------------------------------
 
+def fit_weights(magerr, use_errors: bool = True):
+    """Per-epoch fit weights: ``1/sigma^2``, or unity when ignoring errors.
+
+    Factored out so post-fit diagnostics (:mod:`pycycle.fit_features`) can
+    reproduce the fit's own weighting exactly.  An RSS computed with different
+    weights than the fit used is not comparable to the fit's RSS, which is the
+    whole point of ``r2``.
+
+    Zero or negative errors are replaced by the median positive error rather
+    than dropped, so the weight array stays aligned with the input arrays.
+    """
+    magerr = np.asarray(magerr, dtype=float)
+    if not use_errors:
+        return np.ones(magerr.size, dtype=np.float64)
+    pos = magerr > 0
+    if not pos.any():
+        return np.ones(magerr.size, dtype=np.float64)
+    sigma = np.where(pos, magerr, np.median(magerr[pos]))
+    return np.ascontiguousarray(1.0 / sigma ** 2, dtype=np.float64)
+
+
 def _make_period_grid(hjd, pmin, dphi, pmax=None):
     tspan = np.max(hjd) - np.min(hjd)
     maxfreq = 1.0 / pmin
@@ -208,10 +229,18 @@ class TemplateFitResult:
             mu, ebv, A = coeffs_raw[best_k]
             self.best_coeffs = {'mu': mu, 'EBV': ebv, 'A': A}
         else:
-            # coeffs_raw is (mu_out, A_out)
+            # coeffs_raw is (mu_out, A_out).  The solver carries a slot for every
+            # *template* band, but only updates the ones the data actually has --
+            # an absent band keeps its initial 0.0, which downstream reads as a
+            # measured magnitude of zero.  Report NaN for those instead, so a
+            # colour or a distance modulus computed from them propagates a null
+            # rather than silently returning nonsense.
             mu_arr, A_arr = coeffs_raw
-            self.best_coeffs = {f'mu_{b}': float(mu_arr[best_k, i])
-                                for i, b in enumerate(template.bands)}
+            present = set(filtnams)
+            self.best_coeffs = {
+                f'mu_{b}': (float(mu_arr[best_k, i]) if b in present
+                            else float('nan'))
+                for i, b in enumerate(template.bands)}
             self.best_coeffs['A'] = float(A_arr[best_k])
 
     @property
@@ -452,13 +481,9 @@ class TemplateFitter:
         # filtnams for the result (bands present in data, in template order)
         filtnams = [b for b in template.bands if b in unique_filts]
 
-        # weights
-        if self.use_errors:
-            sigma = np.where(magerr > 0, magerr, np.median(magerr[magerr > 0]))
-            w = 1.0 / sigma ** 2
-        else:
-            w = np.ones(len(hjd))
-        w = np.ascontiguousarray(w, dtype=np.float64)
+        # weights -- shared with pycycle.fit_features so post-fit RSS values are
+        # comparable to the fit's own
+        w = fit_weights(magerr, use_errors=self.use_errors)
 
         # period / omega grid
         if periods is not None:

@@ -73,16 +73,26 @@ configuration comparison before it was caught. Add a separate `ps_status`, or ma
   drops 3 of 17 known DP2 RRL. The pipeline scripts use −0.6. Either align them or
   document the divergence in `DP2Config`.
 
-## 5. Fix the error-calibration claim in the docs
+## 5. Fix the error-calibration claim in the docs — RESOLVED
 
 `docs/flux_fitting_plan.md` states DP2 errors are "~1.4x conservative (median chi2_nu
 0.505)". **That is wrong** — it came from i-band only, with `magerr <= 0.2` applied and
 no quality flags. Measured properly on 261,918 light curves with flags applied, the
 calibration is band- and magnitude-dependent: roughly correct at 22-24, conservative
-(0.5-0.8) fainter than 23, and *under*estimated by 2-5x between 19 and 21.5. Raw
-`psfMagErr`/`psfFluxErr` give chi2_nu of 20-1200 and are unusable; the `_corrected`
-columns are validated as the right choice. The plan's argument is unaffected — only the
-stated figure. `artifacts/dp2_error_model.json` in the rrl project has the numbers.
+(0.5-0.8) fainter than 23, and *under*estimated by 2-5x between 19 and 21.5, with an
+unexplained chi2_nu ~180 spike at g~20.5 (173 objects, r and z at ~4 in the same range)
+that is not yet investigated — see the open bright-end-pathology question in the rrl
+project's `HANDOFF.md`. Raw `psfMagErr`/`psfFluxErr` give chi2_nu of 20-1200 and are
+unusable; the `_corrected` columns are validated as the right choice. The plan's
+argument is unaffected — only the stated figure. `artifacts/dp2_error_model.json` in
+the rrl project has the numbers.
+
+Fixed in `docs/flux_fitting_plan.md` (the `~1.4× conservative` sentence in the
+prefilter-recalibration bullet) and in the rrl project's
+`notebooks/edfs_top_candidates.ipynb` (the "error budget" aside cell, which is where
+the number actually originated — not `faint_rrl_upper_limits.ipynb`, which never
+contained it despite being named in `HANDOFF.md`). No "licu research brief" could be
+located in either repo tree to check.
 
 ## 6. Metallicity term and the i-band PLR zero point
 
